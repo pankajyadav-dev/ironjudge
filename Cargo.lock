@@ -338,22 +338,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "http-ironjudge"
+name = "http_ironjudge"
 version = "0.1.0"
 dependencies = [
  "axum",
  "dotenvy",
+ "http_lib",
  "redis",
  "serde",
  "tokio",
 ]
 
 [[package]]
-name = "http-lib"
+name = "http_lib"
 version = "0.1.0"
 dependencies = [
  "axum",
- "types-lib",
+ "types_lib",
  "uuid",
 ]
 
@@ -777,7 +778,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "redis-lib"
+name = "redis_lib"
 version = "0.1.0"
 dependencies = [
  "deadpool-redis",
@@ -1137,7 +1138,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "types-lib"
+name = "types_lib"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -1490,7 +1491,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 
 [[package]]
-name = "x-ironjudge"
+name = "x_ironjudge"
 version = "0.1.0"
 dependencies = [
  "dotenvy",

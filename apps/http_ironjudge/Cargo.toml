@@ -1,5 +1,5 @@
 [package]
-name = "http-ironjudge"
+name = "http_ironjudge"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,4 +9,4 @@ dotenvy.workspace = true
 redis.workspace = true
 serde.workspace = true
 tokio.workspace = true
-http_lib
+http_lib = { path= "../../libs/http_lib"}

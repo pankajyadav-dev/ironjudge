@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/http-ironjudge", "apps/x-ironjudge", "libs/http-lib", "libs/redis-lib", "libs/types-lib"]
+members = ["apps/http_ironjudge", "apps/x_ironjudge", "libs/http_lib", "libs/redis_lib", "libs/types_lib"]
 
 
 [workspace.dependencies]

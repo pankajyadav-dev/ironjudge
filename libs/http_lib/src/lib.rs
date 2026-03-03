@@ -1,4 +1,4 @@
-use axum::{Json, response::IntoResponse, http::StatusCode};
+use axum::{Json, response::IntoResponse, http::StatusCode, extract::Path};
 use uuid::Uuid;
 use types_lib::*;
 
@@ -23,9 +23,9 @@ pub async fn run_post(
     Ok((StatusCode::OK, Json(response)))
 }
 pub async fn status_get(
-    Json(payload): Json<SubmissionIdPayload>
-) -> Result<impl IntoResponse,(StatusCode,ResponsePayload)> {
-    println!("Received Status Request: {:?}", payload);
+    Path(id): Path<String>
+) -> Result<impl IntoResponse,(StatusCode,Json<ResponsePayload>)> {
+    println!("Received Status Request: {:?}", id);
     let response = ResponsePayload::processing();
     Ok((StatusCode::OK, Json(response)))
 }

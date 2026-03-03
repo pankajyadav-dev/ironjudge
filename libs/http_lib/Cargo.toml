@@ -1,9 +1,9 @@
 [package]
-name = "http-lib"
+name = "http_lib"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 axum.workspace = true
-types-lib = { path = "../types-lib"}
+types_lib = { path = "../types_lib"}
 uuid.workspace = true
