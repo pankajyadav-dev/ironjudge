@@ -1,0 +1,8 @@
+[package]
+name = "redis-lib"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+deadpool-redis.workspace = true
+redis.workspace = true

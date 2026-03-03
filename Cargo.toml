@@ -1,11 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["apps/http-ironjudge", "apps/x-ironjudge", "libs/http-lib"]
+members = ["apps/http-ironjudge", "apps/x-ironjudge", "libs/http-lib", "libs/redis-lib"]
 
 
 [workspace.dependencies]
-tokio = "1.49.0"
 axum = "0.8.8"
 sandbox-rs = "0.1.5"
-redis = "1.0.4"
-dotenv = "0.15.0"
+redis = { version = "1.0.4", features = ["tokio-comp", "connection-manager"] }
+tokio = { version = "1.49.0", features = ["full"] }
+dotenvy = "0.15.7"
+deadpool-redis = "0.23.0"

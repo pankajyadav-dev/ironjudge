@@ -5,6 +5,6 @@ edition = "2024"
 
 [dependencies]
 axum.workspace = true
-dotenv.workspace = true
+dotenvy.workspace = true
 redis.workspace = true
 tokio.workspace = true
