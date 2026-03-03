@@ -6,3 +6,6 @@ members = ["apps/http-ironjudge", "apps/x-ironjudge", "libs/http-lib"]
 [workspace.dependencies]
 tokio = "1.49.0"
 axum = "0.8.8"
+sandbox-rs = "0.1.5"
+redis = "1.0.4"
+dotenv = "0.15.0"
