@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/http-ironjudge", "apps/x-ironjudge", "libs/http-lib", "libs/redis-lib"]
+members = ["apps/http-ironjudge", "apps/x-ironjudge", "libs/http-lib", "libs/redis-lib", "libs/types-lib"]
 
 
 [workspace.dependencies]
@@ -10,3 +10,5 @@ redis = { version = "1.0.4", features = ["tokio-comp", "connection-manager"] }
 tokio = { version = "1.49.0", features = ["full"] }
 dotenvy = "0.15.7"
 deadpool-redis = "0.23.0"
+serde = "1.0.228"
+uuid = { version = "1.21.0", features= ["v4"]}
