@@ -1,6 +1,11 @@
 use redis::{Client, aio::ConnectionManager, RedisError};
 use deadpool_redis::{Config as D_Congif,CreatePoolError, Pool, Runtime};
 
+#[derive(Clone)]
+pub struct AppState{
+    pub redis_manager: ConnectionManager,
+    pub stream_name: String
+}
 
 pub async fn redis_connection_manager(redis_url : &str)->Result<ConnectionManager,RedisError>{
     let client = Client::open(redis_url)?;

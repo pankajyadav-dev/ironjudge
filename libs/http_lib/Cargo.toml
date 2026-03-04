@@ -5,5 +5,8 @@ edition = "2024"
 
 [dependencies]
 axum.workspace = true
+redis.workspace = true
+serde_json.workspace = true
 types_lib = { path = "../types_lib"}
+redis_lib = { path = "../redis_lib"}
 uuid.workspace = true

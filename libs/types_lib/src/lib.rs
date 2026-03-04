@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 pub struct TaskPayload {
     pub tasktype: TaskType,
     pub code: String,
-    pub testcases: String,
+    pub input: String,
+    pub output: Vec<String>,
     #[serde(default = "default_time")]
     pub timelimit: u32,
     #[serde(default = "default_memory")]
@@ -47,23 +48,33 @@ impl ResponsePayload {
             failedcase: None,
         }
     }
+    pub fn error() -> Self {
+        Self {
+            status: StatusType::Error,
+            message: MessageType::Error,
+            error: None,
+            ttpassed: 0,
+            stdout: None,
+            failedcase: None,
+        }
+    }
 
-    pub fn success(stdout: String, tests: u32) -> Self {
+    pub fn success(stdout: Option<String>, tests: u32) -> Self {
         Self {
             status: StatusType::Completed,
             message: MessageType::Success,
             error: None,
             ttpassed: tests,
-            stdout: Some(stdout),
+            stdout: stdout,
             failedcase: None,
         }
     }
 
-    pub fn compiler_error(err: String) -> Self {
+    pub fn compiler_error(err: Option<String>) -> Self {
         Self {
             status: StatusType::Completed,
             message: MessageType::CompileTimeError,
-            error: Some(err),
+            error: err,
             ttpassed: 0,
             stdout: None,
             failedcase: None,
@@ -71,18 +82,18 @@ impl ResponsePayload {
     }
 
     pub fn runtime_error(
-        err: String,
+        err: Option<String>,
         testpassed: u32,
-        stdoutput: String,
-        failedcase: String,
+        stdoutput: Option<String>,
+        failedcase: Option<String>,
     ) -> Self {
         Self {
             status: StatusType::Completed,
             message: MessageType::RunTimeError,
-            error: Some(err),
+            error: err,
             ttpassed: testpassed,
-            stdout: Some(stdoutput),
-            failedcase: Some(failedcase),
+            stdout: stdoutput,
+            failedcase: failedcase,
         }
     }
 
@@ -125,6 +136,7 @@ pub enum StatusType {
     Pending,
     Processing,
     Completed,
+    Error
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -136,6 +148,7 @@ pub enum MessageType {
     RunTimeError,
     MemoryLimitError,
     TimeLimitError,
+    Error
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
