@@ -4,7 +4,7 @@ use axum::{
 };
 use dotenvy::dotenv;
 use http_lib::*;
-use redis_lib::{redis_connection_manager,AppState};
+use redis_lib::{AppState, redis_connection_manager};
 use std::env;
 
 #[tokio::main]
@@ -16,11 +16,10 @@ async fn main() {
     let redis_manager = redis_connection_manager(&redisurl)
         .await
         .expect("Failed to connected redis");
-    
-    
-    let state= AppState{
+
+    let state = AppState {
         redis_manager,
-        stream_name
+        stream_name,
     };
     let app = Router::new()
         .route("/", get(health))

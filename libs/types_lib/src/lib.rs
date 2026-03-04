@@ -136,7 +136,7 @@ pub enum StatusType {
     Pending,
     Processing,
     Completed,
-    Error
+    Error,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -148,7 +148,7 @@ pub enum MessageType {
     RunTimeError,
     MemoryLimitError,
     TimeLimitError,
-    Error
+    Error,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]

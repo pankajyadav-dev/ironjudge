@@ -118,14 +118,11 @@ pub async fn status_get(
 
                 MessageType::CompileTimeError => ResponsePayload::compiler_error(error),
 
-                MessageType::RunTimeError => ResponsePayload::runtime_error(
-                    error,
-                    ttpassed,
-                    stdout,
-                    failed_case
-                ),
+                MessageType::RunTimeError => {
+                    ResponsePayload::runtime_error(error, ttpassed, stdout, failed_case)
+                }
 
-                MessageType::TimeLimitError=> ResponsePayload::time_error(ttpassed),
+                MessageType::TimeLimitError => ResponsePayload::time_error(ttpassed),
 
                 MessageType::MemoryLimitError => ResponsePayload::memory_error(ttpassed),
 
