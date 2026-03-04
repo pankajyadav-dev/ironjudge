@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -15,7 +15,7 @@ pub async fn health() -> Result<impl IntoResponse, (StatusCode, String)> {
     Ok((StatusCode::OK, Json("the service is healthy")))
 }
 pub async fn test_post(
-    State(mut state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<TaskPayload>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     let random_id = Uuid::new_v4().to_string();
@@ -26,12 +26,12 @@ pub async fn test_post(
             format!("Serialization failed: {}", e),
         )
     })?;
-
+    let mut redis_con = state.redis_manager.clone();
     let _: () = redis::pipe()
         .atomic()
         .hset_multiple(format!("status:{}", random_id), &[("status", "queued")])
         .xadd(&state.stream_name, "*", &[("payload", json_payload)])
-        .query_async(&mut state.redis_manager)
+        .query_async(&mut redis_con)
         .await
         .map_err(|e| {
             (
@@ -43,7 +43,7 @@ pub async fn test_post(
     Ok((StatusCode::OK, Json(response)))
 }
 pub async fn run_post(
-    State(mut state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<TaskPayload>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     println!("Received Task: {:?}", payload);
@@ -54,12 +54,12 @@ pub async fn run_post(
             format!("Serialization failed: {}", e),
         )
     })?;
-
+    let mut redis_con = state.redis_manager.clone();
     let _: () = redis::pipe()
         .atomic()
-        .hset_multiple(format!("status:{}", random_id), &[("status", "queued")])
+        .hset_multiple(format!("status:{}", random_id), &[("status", "pending")])
         .xadd(&state.stream_name, "*", &[("payload", json_payload)])
-        .query_async(&mut state.redis_manager)
+        .query_async(&mut redis_con)
         .await
         .map_err(|e| {
             (
@@ -70,13 +70,14 @@ pub async fn run_post(
     let response = SubmissionIdPayload::success(random_id);
     Ok((StatusCode::OK, Json(response)))
 }
+
 pub async fn status_get(
-    State(mut state): State<AppState>,
+    State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ResponsePayload>)> {
     println!("Received Status Request: {:?}", id);
-    let task_status: HashMap<String, String> = state
-        .redis_manager
+    let mut redis_con = state.redis_manager.clone();
+    let mut task_status: HashMap<String, String> = redis_con
         .hgetall(format!("status:{}", id))
         .await
         .map_err(|e| {
@@ -95,10 +96,10 @@ pub async fn status_get(
     println!("task Status: {:?}", task_status);
     println!("Status: {:?}", status);
     let response = match status {
-        Some("success") => {
-            let error = task_status.get("error").cloned();
-            let stdout = task_status.get("stdout").cloned();
-            let failed_case = task_status.get("failedcase").cloned();
+        Some("completed") => {
+            let error = task_status.remove("error");
+            let stdout = task_status.remove("stdout");
+            let failed_case = task_status.remove("failedcase");
             let lifecycle = match task_status.get("message").map(|s| s.as_str()) {
                 Some("success") => MessageType::Success,
                 Some("compile_time_error") => MessageType::CompileTimeError,
@@ -129,7 +130,7 @@ pub async fn status_get(
                 _ => ResponsePayload::error(),
             }
         }
-        Some("pending") | Some("queued") => ResponsePayload::processing(),
+        Some("pending") | Some("processing") => ResponsePayload::processing(),
         None => {
             return Err((StatusCode::NOT_FOUND, Json(ResponsePayload::error())));
         }
