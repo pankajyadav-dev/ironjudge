@@ -29,7 +29,7 @@ pub async fn test_post(
     let mut redis_con = state.redis_manager.clone();
     let _: () = redis::pipe()
         .atomic()
-        .hset_multiple(format!("status:{}", random_id), &[("status", "queued")])
+        .hset_multiple(format!("status:{}", random_id), &[("status", "pending")])
         .xadd(&state.stream_name, "*", &[("payload", json_payload)])
         .query_async(&mut redis_con)
         .await
