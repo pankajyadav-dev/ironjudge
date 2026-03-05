@@ -4,13 +4,19 @@ use serde::{Deserialize, Serialize};
 pub struct TaskPayload {
     pub tasktype: TaskType,
     pub code: String,
-    pub input: String,
-    pub output: Vec<String>,
+    pub testcases: Vec<TestCaseType>,
     #[serde(default = "default_time")]
     pub timelimit: u32,
     #[serde(default = "default_memory")]
     pub memorylimit: u32,
     pub language: LanguageType,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct TestCaseType{
+    pub id: i32,
+    pub input: String,
+    pub output: String
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
