@@ -13,10 +13,10 @@ pub struct TaskPayload {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub struct TestCaseType{
+pub struct TestCaseType {
     pub id: i32,
     pub input: String,
-    pub output: String
+    pub output: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
