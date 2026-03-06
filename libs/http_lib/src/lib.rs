@@ -12,8 +12,18 @@ use uuid::Uuid;
 use redis_lib::AppState;
 use types_lib::*;
 
-pub async fn health() -> Result<impl IntoResponse, (StatusCode, String)> {
-    Ok((StatusCode::OK, Json("the service is healthy")))
+/// Pool-get timeout shared across all handlers.
+const POOL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// TTL applied to every `status:{id}` key (1 hour).
+const STATUS_TTL_SECS: i64 = 600;
+
+// ---------------------------------------------------------------------------
+//  Handlers
+// ---------------------------------------------------------------------------
+
+pub async fn health() -> impl IntoResponse {
+    (StatusCode::OK, Json("the service is healthy"))
 }
 
 pub async fn test_post(
@@ -38,15 +48,20 @@ pub async fn status_get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ResponsePayload>)> {
-    let mut redis_con = state.redis_pool.get().await.map_err(|e| {
-        error!(error = %e, "Failed to get redis connection from pool");
+    // --- Input validation: reject anything that isn't a valid UUID ---
+    if Uuid::parse_str(&id).is_err() {
+        warn!(submission_id = %id, "Received invalid UUID in status request");
+        return Err((StatusCode::BAD_REQUEST, Json(ResponsePayload::error())));
+    }
+
+    let mut redis_con = get_conn_with_timeout(&state).await.map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ResponsePayload::error()),
         )
     })?;
 
-    let mut task_status: HashMap<String, String> = redis_con
+    let task_status: HashMap<String, String> = redis_con
         .hgetall(format!("status:{}", id))
         .await
         .map_err(|e| {
@@ -68,9 +83,9 @@ pub async fn status_get(
 
     let response = match status {
         Some("completed") => {
-            let error = task_status.remove("error");
-            let stdout = task_status.remove("stdout");
-            let failed_case = task_status.remove("failedcase");
+            let error = task_status.get("error").cloned();
+            let stdout = task_status.get("stdout").cloned();
+            let failed_case = task_status.get("failedcase").cloned();
 
             let lifecycle = match task_status.get("message").map(|s| s.as_str()) {
                 Some("success") => MessageType::Success,
@@ -115,12 +130,39 @@ pub async fn status_get(
     Ok((StatusCode::OK, Json(response)))
 }
 
+// ---------------------------------------------------------------------------
+//  Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Get a pooled Redis connection with a timeout so we never hang indefinitely.
+async fn get_conn_with_timeout(
+    state: &Arc<AppState>,
+) -> Result<deadpool_redis::Connection, (StatusCode, String)> {
+    tokio::time::timeout(POOL_TIMEOUT, state.redis_pool.get())
+        .await
+        .map_err(|_| {
+            error!("Timed out waiting for Redis connection from pool");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Service temporarily unavailable".to_string(),
+            )
+        })?
+        .map_err(|e| {
+            error!(error = %e, "Failed to get Redis connection from pool");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Redis connection error".to_string(),
+            )
+        })
+}
+
 async fn enqueue_task(
     state: &Arc<AppState>,
     payload: &TaskPayload,
     task_type: &str,
 ) -> Result<String, (StatusCode, String)> {
     let random_id = Uuid::new_v4().to_string();
+
     let json_payload = serde_json::to_string(payload).map_err(|e| {
         error!(error = %e, task_type, "Failed to serialize TaskPayload");
         (
@@ -129,27 +171,25 @@ async fn enqueue_task(
         )
     })?;
 
-    let mut redis_con = tokio::time::timeout(Duration::from_secs(2), state.redis_pool.get())
-        .await
-        .map_err(|_| {
-            error!("timeout: Failed to get redis connection from pool");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Redis connection error not assigned from pool".to_string(),
-            )
-        })?
-        .map_err(|e| {
-            error!(error = %e, "Failed to get redis connection from pool");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "redis connection error".to_string(),
-            )
-        })?;
+    let mut redis_con = get_conn_with_timeout(state).await?;
 
+    // Atomic pipeline: set status hash + add to stream + set TTL
     let _: () = redis::pipe()
         .atomic()
-        .hset_multiple(format!("status:{}", random_id), &[("status", "pending")])
-        .xadd(&state.stream_name, "*", &[("payload", json_payload)])
+        .hset_multiple(
+            format!("status:{}", random_id),
+            &[("status", "pending")],
+        )
+        .expire(format!("status:{}", random_id), STATUS_TTL_SECS)
+        .xadd(
+            &state.stream_name,
+            "*",
+            &[
+                ("payload", json_payload.as_str()),
+                ("id", random_id.as_str()),
+                ("task_type", task_type),
+            ],
+        )
         .query_async(&mut *redis_con)
         .await
         .map_err(|e| {
@@ -163,4 +203,3 @@ async fn enqueue_task(
     info!(submission_id = %random_id, task_type, "Task successfully enqueued");
     Ok(random_id)
 }
-

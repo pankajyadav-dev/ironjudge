@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
         config.stream_key
     );
 
-    let redis_pool = redis_connection_pooler(&config.redis_url)
+    let redis_pool = redis_connection_pooler(&config.redis_url, None)
         .context("Critical: Failed to create Redis pool")?;
     let shared_redis_pool = Arc::new(redis_pool);
     let mut setup_conn = shared_redis_pool
