@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 types_lib = { version = "0.1.0", path = "../types_lib" }

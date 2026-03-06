@@ -8,7 +8,7 @@ use redis::{
 use redis_lib::{redis_connection_pooler,process_redis_stream};
 use std::{env, sync::Arc};
 use tracing::{error, info, warn};
-use sandbox_lib::execute_submissions_detached;
+use sandbox_lib::{execute_submissions_detached,get_heavy_tasks_threads};
 #[derive(Debug, Clone)]
 struct EngineConfig {
     redis_url: String,
@@ -37,7 +37,8 @@ impl EngineConfig {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     dotenv().ok();
-    let limiter = Arc::new(Semaphore::new(2));
+    let heavy_thread_limit = get_heavy_tasks_threads();
+    let limiter = Arc::new(Semaphore::new(heavy_thread_limit));
     let config = EngineConfig::from_env()?;
     info!(
         "Starting IronJudge execution engine on stream: {}",
@@ -98,15 +99,6 @@ async fn main() -> Result<()> {
                 }
                 let stream_payload = process_redis_stream(entries);
                 execute_submissions_detached(stream_payload, limiter.clone()).await;
-                // for stream_data in entries {
-                //     info!("{:?}", stream_data);
-                //     for record in stream_data.ids {
-                //         info!("Pulled task ID: {}", record.id);
-                //         for (key, value) in record.map.iter() {
-                //             tracing::debug!("  Key: {}, Value: {:?}", key, value);
-                //         }
-                //     }
-                // }
             }
             Err(e) => {
                 warn!("Failed to read from stream: {}. Retrying...", e);

@@ -878,6 +878,7 @@ name = "sandbox_lib"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "tempfile",
  "tokio",
  "tracing",
  "types_lib",

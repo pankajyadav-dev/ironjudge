@@ -164,6 +164,52 @@ pub enum TaskType {
     Test,
 }
 
+
+#[derive(Clone, Debug)]
+pub struct LanguageConfig {
+    pub source_filename: &'static str,
+    pub compile_cmd: Option<(&'static str, Vec<&'static str>)>,
+    pub run_cmd: (&'static str, Vec<&'static str>),
+}
+
+impl LanguageConfig {
+    pub fn get(language: &LanguageType) -> Self {
+        match language {
+            LanguageType::Cpp => LanguageConfig {
+                source_filename: "main.cpp",
+                compile_cmd: Some(("g++", vec!["main.cpp", "-O2", "-o", "solution"])),
+                run_cmd: ("./solution", vec![]),
+            },
+            LanguageType::Rust => LanguageConfig {
+                source_filename: "main.rs",
+                compile_cmd: Some(("rustc", vec!["main.rs", "-O", "-o", "solution"])),
+                run_cmd: ("./solution", vec![]),
+            },
+            LanguageType::Java => LanguageConfig {
+                source_filename: "Main.java", 
+                compile_cmd: Some(("javac", vec!["Main.java"])),
+                run_cmd: ("java", vec!["Main"]),
+            },
+            LanguageType::Py => LanguageConfig {
+                source_filename: "solution.py",
+                compile_cmd: None,
+                run_cmd: ("python3", vec!["solution.py"]),
+            },
+            LanguageType::Js => LanguageConfig {
+                source_filename: "solution.js",
+                compile_cmd: None,
+                run_cmd: ("bun", vec!["solution.js"]),
+            },
+            LanguageType::Ts => LanguageConfig {
+                source_filename: "solution.ts",
+                compile_cmd: None, 
+                run_cmd: ("bun", vec!["solution.js"]),
+            },
+        }
+    }
+}
+
+
 fn default_time() -> u32 {
     2000
 }
