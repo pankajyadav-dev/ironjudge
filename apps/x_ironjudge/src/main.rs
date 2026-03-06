@@ -5,10 +5,10 @@ use redis::{
     AsyncCommands,
     streams::{StreamReadOptions, StreamReadReply},
 };
-use redis_lib::redis_connection_pooler;
+use redis_lib::{redis_connection_pooler,process_redis_stream};
 use std::{env, sync::Arc};
 use tracing::{error, info, warn};
-
+use sandbox_lib::execute_submissions_detached;
 #[derive(Debug, Clone)]
 struct EngineConfig {
     redis_url: String,
@@ -37,7 +37,7 @@ impl EngineConfig {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     dotenv().ok();
-    let _limiter = Arc::new(Semaphore::new(2));
+    let limiter = Arc::new(Semaphore::new(2));
     let config = EngineConfig::from_env()?;
     info!(
         "Starting IronJudge execution engine on stream: {}",
@@ -96,6 +96,8 @@ async fn main() -> Result<()> {
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                     continue;
                 }
+                let stream_payload = process_redis_stream(entries);
+                execute_submissions_detached(stream_payload, limiter.clone()).await;
                 // for stream_data in entries {
                 //     info!("{:?}", stream_data);
                 //     for record in stream_data.ids {

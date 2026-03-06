@@ -1615,6 +1615,7 @@ dependencies = [
  "redis",
  "redis_lib",
  "sandbox-rs",
+ "sandbox_lib",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -19,6 +19,7 @@ pub async fn execute_submissions_detached(
         tokio::spawn(async move {
             let (sub_id, response) = tokio::task::spawn_blocking(move || {
                 println!("Starting sandbox execution for job: {}", submission_id);
+                println!("payload sandbox execution for job: {:?}", payload);
                 
                 
                 
