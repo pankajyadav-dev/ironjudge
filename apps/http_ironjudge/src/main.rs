@@ -5,7 +5,7 @@ use axum::{
 };
 use dotenvy::dotenv;
 use http_lib::*;
-use redis_lib::{AppState, redis_connection_manager};
+use redis_lib::{AppState, redis_connection_pooler};
 use std::{env, sync::Arc};
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -22,12 +22,11 @@ async fn main() -> Result<()> {
     let redisurl = env::var("REDISURL").context("REDISURL not found in .env")?;
     let stream_name = env::var("STREAMNAME").context("STREAMNAME not found in .env")?;
     
-    let redis_manager = redis_connection_manager(&redisurl)
-        .await
+    let redis_pool = redis_connection_pooler(&redisurl)
         .context("Failed to connect to Redis pool")?;
 
     let state = Arc::new(AppState {
-        redis_manager,
+        redis_pool,
         stream_name,
     });
 

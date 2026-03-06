@@ -362,6 +362,7 @@ dependencies = [
  "redis",
  "redis_lib",
  "serde_json",
+ "tokio",
  "tracing",
  "types_lib",
  "uuid",

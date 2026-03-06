@@ -11,3 +11,5 @@ types_lib = { path = "../types_lib"}
 redis_lib = { path = "../redis_lib"}
 uuid.workspace = true
 tracing.workspace = true
+tokio.workspace = true
+

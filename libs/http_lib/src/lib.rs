@@ -1,50 +1,16 @@
 use axum::{
+    Json,
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
 use redis::AsyncCommands;
-use std::{collections::HashMap, sync::Arc};
-use tracing::{debug, error, info, warn}; 
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use redis_lib::AppState;
 use types_lib::*;
-async fn enqueue_task(
-    state: &Arc<AppState>,
-    payload: &TaskPayload,
-    task_type: &str,
-) -> Result<String, (StatusCode, String)> {
-    let random_id = Uuid::new_v4().to_string();
-    let json_payload = serde_json::to_string(payload).map_err(|e| {
-        error!(error = %e, task_type, "Failed to serialize TaskPayload");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal server error while processing request".to_string(),
-        )
-    })?;
-
-    let mut redis_con = state.redis_manager.clone();
-    
-    let _: () = redis::pipe()
-        .atomic()
-        .hset_multiple(format!("status:{}", random_id), &[("status", "pending")])
-        .xadd(&state.stream_name, "*", &[("payload", json_payload)])
-        .query_async(&mut redis_con)
-        .await
-        .map_err(|e| {
-            error!(error = %e, submission_id = %random_id, "Failed to write task to Redis stream");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Database error while queuing task".to_string(),
-            )
-        })?;
-
-    info!(submission_id = %random_id, task_type, "Task successfully enqueued");
-    Ok(random_id)
-}
-
 
 pub async fn health() -> Result<impl IntoResponse, (StatusCode, String)> {
     Ok((StatusCode::OK, Json("the service is healthy")))
@@ -72,8 +38,14 @@ pub async fn status_get(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ResponsePayload>)> {
-    let mut redis_con = state.redis_manager.clone();
-    
+    let mut redis_con = state.redis_pool.get().await.map_err(|e| {
+        error!(error = %e, "Failed to get redis connection from pool");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ResponsePayload::error()),
+        )
+    })?;
+
     let mut task_status: HashMap<String, String> = redis_con
         .hgetall(format!("status:{}", id))
         .await
@@ -91,7 +63,7 @@ pub async fn status_get(
     }
 
     let status = task_status.get("status").map(|s| s.as_str());
-    
+
     debug!(submission_id = %id, current_status = ?status, "Successfully fetched task status");
 
     let response = match status {
@@ -99,7 +71,7 @@ pub async fn status_get(
             let error = task_status.remove("error");
             let stdout = task_status.remove("stdout");
             let failed_case = task_status.remove("failedcase");
-            
+
             let lifecycle = match task_status.get("message").map(|s| s.as_str()) {
                 Some("success") => MessageType::Success,
                 Some("compile_time_error") => MessageType::CompileTimeError,
@@ -109,7 +81,7 @@ pub async fn status_get(
                 Some("processing") => MessageType::Processing,
                 _ => MessageType::Error,
             };
-            
+
             let ttpassed = task_status
                 .get("ttpassed")
                 .and_then(|s| s.parse::<u32>().ok())
@@ -142,3 +114,53 @@ pub async fn status_get(
 
     Ok((StatusCode::OK, Json(response)))
 }
+
+async fn enqueue_task(
+    state: &Arc<AppState>,
+    payload: &TaskPayload,
+    task_type: &str,
+) -> Result<String, (StatusCode, String)> {
+    let random_id = Uuid::new_v4().to_string();
+    let json_payload = serde_json::to_string(payload).map_err(|e| {
+        error!(error = %e, task_type, "Failed to serialize TaskPayload");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error while processing request".to_string(),
+        )
+    })?;
+
+    let mut redis_con = tokio::time::timeout(Duration::from_secs(2), state.redis_pool.get())
+        .await
+        .map_err(|_| {
+            error!("timeout: Failed to get redis connection from pool");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Redis connection error not assigned from pool".to_string(),
+            )
+        })?
+        .map_err(|e| {
+            error!(error = %e, "Failed to get redis connection from pool");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "redis connection error".to_string(),
+            )
+        })?;
+
+    let _: () = redis::pipe()
+        .atomic()
+        .hset_multiple(format!("status:{}", random_id), &[("status", "pending")])
+        .xadd(&state.stream_name, "*", &[("payload", json_payload)])
+        .query_async(&mut *redis_con)
+        .await
+        .map_err(|e| {
+            error!(error = %e, submission_id = %random_id, "Failed to write task to Redis stream");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database error while queuing task".to_string(),
+            )
+        })?;
+
+    info!(submission_id = %random_id, task_type, "Task successfully enqueued");
+    Ok(random_id)
+}
+
