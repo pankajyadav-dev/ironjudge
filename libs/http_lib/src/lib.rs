@@ -176,10 +176,7 @@ async fn enqueue_task(
     // Atomic pipeline: set status hash + add to stream + set TTL
     let _: () = redis::pipe()
         .atomic()
-        .hset_multiple(
-            format!("status:{}", random_id),
-            &[("status", "pending")],
-        )
+        .hset_multiple(format!("status:{}", random_id), &[("status", "pending")])
         .expire(format!("status:{}", random_id), STATUS_TTL_SECS)
         .xadd(
             &state.stream_name,

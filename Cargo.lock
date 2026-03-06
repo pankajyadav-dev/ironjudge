@@ -807,6 +807,9 @@ version = "0.1.0"
 dependencies = [
  "deadpool-redis",
  "redis",
+ "serde_json",
+ "tracing",
+ "types_lib",
 ]
 
 [[package]]
@@ -868,6 +871,16 @@ dependencies = [
  "tempfile",
  "thiserror",
  "walkdir",
+]
+
+[[package]]
+name = "sandbox_lib"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tokio",
+ "tracing",
+ "types_lib",
 ]
 
 [[package]]

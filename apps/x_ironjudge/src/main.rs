@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use tokio::sync::Semaphore;
 use dotenvy::dotenv;
 use redis::{
     AsyncCommands,
@@ -14,6 +15,7 @@ struct EngineConfig {
     stream_key: String,
     group_name: String,
     consumer_name: String,
+    redispayload_len: usize,
 }
 
 impl EngineConfig {
@@ -23,6 +25,10 @@ impl EngineConfig {
             stream_key: env::var("STREAMNAME").context("Missing STREAMNAME")?,
             group_name: env::var("GROUPNAME").context("Missing GROUPNAME")?,
             consumer_name: env::var("CONSUMERNAME").context("Missing CONSUMERNAME")?,
+            redispayload_len: env::var("REDISPAYLOADLEN")
+                .context("Missing REDISPAYLOADLEN")?
+                .parse::<usize>()
+                .context("REDISPAYLOADLEN  must be valid number")?,
         })
     }
 }
@@ -31,7 +37,7 @@ impl EngineConfig {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     dotenv().ok();
-
+    let _limiter = Arc::new(Semaphore::new(2));
     let config = EngineConfig::from_env()?;
     info!(
         "Starting IronJudge execution engine on stream: {}",
@@ -78,7 +84,7 @@ async fn main() -> Result<()> {
 
         let opts = StreamReadOptions::default()
             .group(&config.group_name, &config.consumer_name)
-            .count(1);
+            .count(config.redispayload_len);
 
         let stream_result: redis::RedisResult<StreamReadReply> = redis_conn
             .xread_options(&[&config.stream_key], &[">"], &opts)
@@ -90,14 +96,15 @@ async fn main() -> Result<()> {
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                     continue;
                 }
-                for stream_key_data in entries.keys {
-                    for record in stream_key_data.ids {
-                        info!("Pulled task ID: {}", record.id);
-                        for (key, value) in record.map.iter() {
-                            tracing::debug!("  Key: {}, Value: {:?}", key, value);
-                        }
-                    }
-                }
+                // for stream_data in entries {
+                //     info!("{:?}", stream_data);
+                //     for record in stream_data.ids {
+                //         info!("Pulled task ID: {}", record.id);
+                //         for (key, value) in record.map.iter() {
+                //             tracing::debug!("  Key: {}, Value: {:?}", key, value);
+                //         }
+                //     }
+                // }
             }
             Err(e) => {
                 warn!("Failed to read from stream: {}. Retrying...", e);
