@@ -1,7 +1,7 @@
 use deadpool_redis::{Config as DConfig, CreatePoolError, Pool, Runtime};
 use redis::streams::StreamReadReply;
-use tracing::{error};
-use types_lib::{TaskPayload};
+use tracing::error;
+use types_lib::TaskPayload;
 #[derive(Clone)]
 pub struct AppState {
     pub redis_pool: Pool,
@@ -43,7 +43,6 @@ pub async fn ping_redis(pool: &Pool) -> Result<(), Box<dyn std::error::Error + S
     }
     Ok(())
 }
-
 
 /// process the redis raw paylaod and return the formatted task vector
 pub fn process_redis_stream(reply: StreamReadReply) -> Vec<(String, TaskPayload)> {

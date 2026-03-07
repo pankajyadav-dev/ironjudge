@@ -878,6 +878,9 @@ name = "sandbox_lib"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
+ "nix",
+ "sandbox-rs",
  "tempfile",
  "tokio",
  "tracing",

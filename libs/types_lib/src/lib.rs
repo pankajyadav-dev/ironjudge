@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct TaskPayload {
@@ -6,10 +7,46 @@ pub struct TaskPayload {
     pub code: String,
     pub testcases: Vec<TestCaseType>,
     #[serde(default = "default_time")]
-    pub timelimit: u32,
+    pub timelimit: usize,
     #[serde(default = "default_memory")]
-    pub memorylimit: u32,
+    pub memorylimit: usize,
     pub language: LanguageType,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct SandboxConfiguration {
+    pub submissionid: String,
+    pub root_dir: PathBuf,
+    pub input_file: PathBuf,
+    pub output_file: PathBuf,
+    pub user_output: PathBuf,
+    pub error_output: PathBuf,
+    pub time_limit: usize,
+    pub memory_limit: usize,
+}
+
+impl SandboxConfiguration {
+    pub fn process(
+        submissionid: String,
+        root_dir: PathBuf,
+        input_file: PathBuf,
+        output_file: PathBuf,
+        user_output: PathBuf,
+        error_output: PathBuf,
+        time_limit: usize,
+        memory_limit: usize,
+    ) -> Self {
+        Self {
+            submissionid,
+            root_dir,
+            input_file,
+            output_file,
+            user_output,
+            error_output,
+            time_limit,
+            memory_limit,
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -164,7 +201,6 @@ pub enum TaskType {
     Test,
 }
 
-
 #[derive(Clone, Debug)]
 pub struct LanguageConfig {
     pub source_filename: &'static str,
@@ -174,6 +210,9 @@ pub struct LanguageConfig {
 
 impl LanguageConfig {
     pub fn get(language: &LanguageType) -> Self {
+        // Resolve binary paths at runtime so execve inside the sandbox works.
+        // Compilation runs on the host (tokio::process::Command searches PATH),
+        // but sandbox.run() uses execve which requires absolute paths.
         match language {
             LanguageType::Cpp => LanguageConfig {
                 source_filename: "main.cpp",
@@ -186,7 +225,7 @@ impl LanguageConfig {
                 run_cmd: ("./solution", vec![]),
             },
             LanguageType::Java => LanguageConfig {
-                source_filename: "Main.java", 
+                source_filename: "Main.java",
                 compile_cmd: Some(("javac", vec!["Main.java"])),
                 run_cmd: ("java", vec!["Main"]),
             },
@@ -202,17 +241,16 @@ impl LanguageConfig {
             },
             LanguageType::Ts => LanguageConfig {
                 source_filename: "solution.ts",
-                compile_cmd: None, 
-                run_cmd: ("bun", vec!["solution.js"]),
+                compile_cmd: None,
+                run_cmd: ("bun", vec!["solution.ts"]),
             },
         }
     }
 }
 
-
-fn default_time() -> u32 {
+fn default_time() -> usize {
     2000
 }
-fn default_memory() -> u32 {
+fn default_memory() -> usize {
     256
 }
