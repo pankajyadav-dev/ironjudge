@@ -13,6 +13,15 @@ pub struct TaskPayload {
     pub language: LanguageType,
 }
 
+#[derive(Debug)]
+pub struct SandboxResult {
+    pub exit_code: i32,
+    pub signal: Option<i32>,
+    pub wall_time_ms: u128,
+}
+
+pub type SandboxError = String;
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SandboxConfiguration {
     pub submissionid: String,
@@ -23,6 +32,8 @@ pub struct SandboxConfiguration {
     pub error_output: PathBuf,
     pub time_limit: usize,
     pub memory_limit: usize,
+    pub run_cmd_exe: String,
+    pub run_cmd_args: Vec<String>,
 }
 
 impl SandboxConfiguration {
@@ -35,6 +46,8 @@ impl SandboxConfiguration {
         error_output: PathBuf,
         time_limit: usize,
         memory_limit: usize,
+        run_cmd_exe: String,
+        run_cmd_args: Vec<String>,
     ) -> Self {
         Self {
             submissionid,
@@ -45,6 +58,8 @@ impl SandboxConfiguration {
             error_output,
             time_limit,
             memory_limit,
+            run_cmd_exe,
+            run_cmd_args,
         }
     }
 }
