@@ -86,7 +86,7 @@ pub async fn execute_submissions_detached(
             }
 
             println!("Compilation is completed");
-    
+
             let (input_data, expected_output) = testcase_parsing(payload.testcases.clone());
             let testcases_len = payload.testcases.len() as u32;
             let input_file_path = root_dir_path.join("input.txt");
@@ -160,26 +160,44 @@ pub async fn execute_submissions_detached(
                             _ => format!("Runtime Error: Killed by signal {}", signal),
                         };
                         println!("\n=== {} [{}] ===", error_msg, submission_id);
+
                         let actual_error = tokio::fs::read_to_string(&error_file_path)
                             .await
                             .unwrap_or_default();
+                        let actual_output = tokio::fs::read_to_string(&user_output_file_path)
+                            .await
+                            .unwrap_or_default();
+
                         if !actual_error.is_empty() {
                             println!("Sandbox stderr:\n{}", actual_error);
+                        }
+                        if !actual_output.is_empty() {
+                            println!("Sandbox stdout:\n{}", actual_output);
                         }
 
                         ResponsePayload::success(Some(error_msg), 0)
                     } else if result.exit_code != 0 {
                         let error_msg = format!("Runtime Error (Exit Code: {})", result.exit_code);
                         println!("\n=== {} [{}] ===", error_msg, submission_id);
+
                         let actual_error = tokio::fs::read_to_string(&error_file_path)
                             .await
                             .unwrap_or_default();
+                        let actual_output = tokio::fs::read_to_string(&user_output_file_path)
+                            .await
+                            .unwrap_or_default();
+
                         if !actual_error.is_empty() {
                             println!("Sandbox stderr:\n{}", actual_error);
+                        }
+                        // FIX: Ensure stdout is printed on non-zero exits for runtimes like Java
+                        if !actual_output.is_empty() {
+                            println!("Sandbox stdout:\n{}", actual_output);
                         }
 
                         ResponsePayload::success(Some(error_msg), 0)
                     } else {
+                        // ... (Your existing success block remains entirely unchanged)
                         let actual_output = tokio::fs::read_to_string(&user_output_file_path)
                             .await
                             .unwrap_or_else(|_| "".to_string());
@@ -189,12 +207,14 @@ pub async fn execute_submissions_detached(
                         let actual_error = tokio::fs::read_to_string(&error_file_path)
                             .await
                             .unwrap_or_else(|_| "".to_string());
+
                         println!("\n=== STDOUT [{}] ===", submission_id);
                         println!("{}", actual_output);
                         println!("========================\n");
                         println!("\n=== output STDOUT [{}] ===", submission_id);
                         println!("{}", output);
                         println!("========================\n");
+
                         if !actual_error.is_empty() {
                             println!("\n=== STDERR [{}] ===", submission_id);
                             println!("{}", actual_error);
@@ -226,6 +246,7 @@ pub async fn execute_submissions_detached(
         });
     }
 }
+
 pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxResult, SandboxError> {
     let start_time = Instant::now();
 
@@ -295,6 +316,11 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     fs::create_dir_all(&tmp_path).unwrap_or_default();
     let tmp_tgt = CString::new(tmp_path.to_str().unwrap()).unwrap();
 
+    // Prepare /dev/shm for isolated shared memory (crucial for V8/JSC/JVM)
+    let dev_shm_path = sandbox_config.root_dir.join("dev/shm");
+    fs::create_dir_all(&dev_shm_path).unwrap_or_default();
+    let dev_shm_tgt = CString::new(dev_shm_path.to_str().unwrap()).unwrap();
+
     // --- 3. Command Setup ---
     let exe_path = if sandbox_config.run_cmd_exe.starts_with("./") {
         sandbox_config.run_cmd_exe.replacen(".", "", 1)
@@ -320,18 +346,12 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
 
     // Prepare paths ahead of time for safe usage inside pre_exec
     let cgroup_procs_file = CString::new(format!("{}/cgroup.procs", cgroup_path)).unwrap();
-    let _setgroups_file = CString::new("/proc/self/setgroups").unwrap();
-    let _uid_map_file = CString::new("/proc/self/uid_map").unwrap();
-    let _gid_map_file = CString::new("/proc/self/gid_map").unwrap();
-    let _map_data = b"0 65534 1\n";
-    let _deny_data = b"deny\n";
     let time_limit = sandbox_config.time_limit as u64;
     let root_dir_c = CString::new(sandbox_config.root_dir.to_str().unwrap()).unwrap();
 
     // --- 4. Pre-Exec Hook ---
     unsafe {
         cmd.pre_exec(move || {
-            // Helper for async-signal-safe file writing (avoids allocator deadlocks)
             let write_sys = |path: &CString, data: &[u8]| -> bool {
                 let fd = libc::open(path.as_ptr(), libc::O_WRONLY);
                 if fd < 0 {
@@ -342,7 +362,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
                 res == data.len() as isize
             };
 
-            // Write PID to cgroups using basic math to avoid format! allocations
             let mut pid = libc::getpid();
             let mut pid_buf = [0u8; 32];
             let mut temp = [0u8; 32];
@@ -365,11 +384,13 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
             }
 
             // Unshare ALL EXCEPT user namespace first
-            let flags = CloneFlags::CLONE_NEWPID
-                | CloneFlags::CLONE_NEWIPC
+            // FIX: Removed CLONE_NEWPID to allow Java and Bun to spawn JIT/GC threads
+            // safely upon booting without crashing due to unshare-without-fork kernel rules.
+            let flags = CloneFlags::CLONE_NEWIPC
                 | CloneFlags::CLONE_NEWNET
                 | CloneFlags::CLONE_NEWUTS
                 | CloneFlags::CLONE_NEWNS;
+
             if unshare(flags).is_err() {
                 libc::_exit(102);
             }
@@ -422,6 +443,18 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
                 libc::_exit(106);
             }
 
+            // FIX: Mount isolated shared memory for heavy JIT compilers
+            if libc::mount(
+                b"tmpfs\0".as_ptr() as *const i8,
+                dev_shm_tgt.as_ptr(),
+                b"tmpfs\0".as_ptr() as *const i8,
+                0,
+                b"size=64m,mode=1777\0".as_ptr() as *const libc::c_void,
+            ) != 0
+            {
+                libc::_exit(113);
+            }
+
             if libc::chroot(root_dir_c.as_ptr()) != 0 {
                 libc::_exit(107);
             }
@@ -432,7 +465,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
                 libc::_exit(110);
             }
 
-            // Set GID and UID to 'nobody' (65534)
             if libc::setgid(65534) != 0 {
                 libc::_exit(111);
             }
