@@ -239,7 +239,8 @@ impl LanguageConfig {
             LanguageType::Java => LanguageConfig {
                 source_filename: "Main.java",
                 compile_cmd: Some(("javac", vec!["Main.java"])),
-                run_cmd: ("java", vec!["Main"]),
+                // run_cmd: ("java", vec!["-Xmx128M", "-Xms64M", "-XX:+UseSerialGC", "Main"]),
+                run_cmd: ("java", vec!["--version"]),
             },
             LanguageType::Py => LanguageConfig {
                 source_filename: "solution.py",
@@ -250,11 +251,13 @@ impl LanguageConfig {
                 source_filename: "solution.js",
                 compile_cmd: None,
                 run_cmd: ("bun", vec!["solution.js"]),
+                // run_cmd: ("bun", vec!["--version"]),
             },
             LanguageType::Ts => LanguageConfig {
                 source_filename: "solution.ts",
                 compile_cmd: None,
                 run_cmd: ("bun", vec!["solution.ts"]),
+                // run_cmd: ("bun", vec!["--version"]),
             },
         }
     }

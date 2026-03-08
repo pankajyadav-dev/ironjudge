@@ -3,7 +3,7 @@ use nix::sched::{CloneFlags, unshare};
 use std::ffi::CString;
 use std::fs::{self};
 use std::os::fd::AsRawFd;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 use std::{sync::Arc, thread::available_parallelism};
@@ -85,6 +85,8 @@ pub async fn execute_submissions_detached(
                 }
             }
 
+            println!("Compilation is completed");
+    
             let (input_data, expected_output) = testcase_parsing(payload.testcases.clone());
             let testcases_len = payload.testcases.len() as u32;
             let input_file_path = root_dir_path.join("input.txt");
@@ -166,8 +168,7 @@ pub async fn execute_submissions_detached(
                         }
 
                         ResponsePayload::success(Some(error_msg), 0)
-                    }
-                    else if result.exit_code != 0 {
+                    } else if result.exit_code != 0 {
                         let error_msg = format!("Runtime Error (Exit Code: {})", result.exit_code);
                         println!("\n=== {} [{}] ===", error_msg, submission_id);
                         let actual_error = tokio::fs::read_to_string(&error_file_path)
@@ -178,9 +179,11 @@ pub async fn execute_submissions_detached(
                         }
 
                         ResponsePayload::success(Some(error_msg), 0)
-                    }
-                    else {
+                    } else {
                         let actual_output = tokio::fs::read_to_string(&user_output_file_path)
+                            .await
+                            .unwrap_or_else(|_| "".to_string());
+                        let output = tokio::fs::read_to_string(&output_file_path)
                             .await
                             .unwrap_or_else(|_| "".to_string());
                         let actual_error = tokio::fs::read_to_string(&error_file_path)
@@ -188,6 +191,9 @@ pub async fn execute_submissions_detached(
                             .unwrap_or_else(|_| "".to_string());
                         println!("\n=== STDOUT [{}] ===", submission_id);
                         println!("{}", actual_output);
+                        println!("========================\n");
+                        println!("\n=== output STDOUT [{}] ===", submission_id);
+                        println!("{}", output);
                         println!("========================\n");
                         if !actual_error.is_empty() {
                             println!("\n=== STDERR [{}] ===", submission_id);
@@ -220,16 +226,24 @@ pub async fn execute_submissions_detached(
         });
     }
 }
-
 pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxResult, SandboxError> {
     let start_time = Instant::now();
 
     let in_file = sandbox_config.input_file;
     let out_file = sandbox_config.output_file;
     let err_file = sandbox_config.error_output;
-    let user_out_file = sandbox_config.user_output; // Extract user output file
+    let user_out_file = sandbox_config.user_output;
     let out_fd = out_file.as_raw_fd();
 
+    // Unlock the chroot directory so the unprivileged sandbox user can read and execute files
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(&sandbox_config.root_dir)
+        .unwrap()
+        .permissions();
+    perms.set_mode(0o777);
+    let _ = fs::set_permissions(&sandbox_config.root_dir, perms);
+
+    // --- 1. Setup Cgroups ---
     let cgroup_path = format!("/sys/fs/cgroup/dsa_{}", sandbox_config.submissionid);
     fs::create_dir_all(&cgroup_path).map_err(|e| format!("Cgroup error: {}", e))?;
 
@@ -237,23 +251,51 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     fs::write(format!("{}/memory.max", cgroup_path), mem_bytes.to_string()).unwrap();
     let _ = fs::write(format!("{}/memory.swap.max", cgroup_path), "0");
     fs::write(format!("{}/cpu.max", cgroup_path), "100000 100000").unwrap();
-    fs::write(format!("{}/pids.max", cgroup_path), "64").unwrap();
+    // Increase to 512 for JIT compilers that spawn many background threads on boot
+    fs::write(format!("{}/pids.max", cgroup_path), "512").unwrap();
 
-    let bind_dirs = ["/bin", "/lib", "/lib64", "/usr", "/etc"];
-    let mut mounts = Vec::new();
+    let readonly_dirs = [
+        "/bin",
+        "/lib",
+        "/lib64",
+        "/usr",
+        "/etc",
+        "/root/.bun",
+        "/app/sandbox_bin",
+    ];
+    let writable_dirs = ["/dev", "/sys"];
+    let mut mounts: Vec<(CString, CString, bool)> = Vec::new();
 
-    for dir in &bind_dirs {
+    for dir in &readonly_dirs {
         let host_path = std::path::Path::new(dir);
         if host_path.exists() {
             let target_path = sandbox_config.root_dir.join(dir.trim_start_matches('/'));
             fs::create_dir_all(&target_path).unwrap_or_default();
-
             let src = CString::new(*dir).unwrap();
             let tgt = CString::new(target_path.to_str().unwrap()).unwrap();
-            mounts.push((src, tgt));
+            mounts.push((src, tgt, true));
+        }
+    }
+    for dir in &writable_dirs {
+        let host_path = std::path::Path::new(dir);
+        if host_path.exists() {
+            let target_path = sandbox_config.root_dir.join(dir.trim_start_matches('/'));
+            fs::create_dir_all(&target_path).unwrap_or_default();
+            let src = CString::new(*dir).unwrap();
+            let tgt = CString::new(target_path.to_str().unwrap()).unwrap();
+            mounts.push((src, tgt, false));
         }
     }
 
+    let proc_path = sandbox_config.root_dir.join("proc");
+    fs::create_dir_all(&proc_path).unwrap_or_default();
+    let proc_tgt = CString::new(proc_path.to_str().unwrap()).unwrap();
+
+    let tmp_path = sandbox_config.root_dir.join("tmp");
+    fs::create_dir_all(&tmp_path).unwrap_or_default();
+    let tmp_tgt = CString::new(tmp_path.to_str().unwrap()).unwrap();
+
+    // --- 3. Command Setup ---
     let exe_path = if sandbox_config.run_cmd_exe.starts_with("./") {
         sandbox_config.run_cmd_exe.replacen(".", "", 1)
     } else {
@@ -263,31 +305,76 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     let mut cmd = Command::new(&exe_path);
     cmd.args(&sandbox_config.run_cmd_args);
 
+    // Clear the host environment and provide safe temp paths for JIT runtimes
+    cmd.env_clear();
+    cmd.env(
+        "PATH",
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.bun/bin",
+    );
+    cmd.env("HOME", "/tmp");
+    cmd.env("TMPDIR", "/tmp");
+
     cmd.stdin(Stdio::from(in_file));
     cmd.stdout(Stdio::from(user_out_file));
     cmd.stderr(Stdio::from(err_file));
 
-    let cgroup_procs_file = format!("{}/cgroup.procs", cgroup_path);
+    // Prepare paths ahead of time for safe usage inside pre_exec
+    let cgroup_procs_file = CString::new(format!("{}/cgroup.procs", cgroup_path)).unwrap();
+    let _setgroups_file = CString::new("/proc/self/setgroups").unwrap();
+    let _uid_map_file = CString::new("/proc/self/uid_map").unwrap();
+    let _gid_map_file = CString::new("/proc/self/gid_map").unwrap();
+    let _map_data = b"0 65534 1\n";
+    let _deny_data = b"deny\n";
     let time_limit = sandbox_config.time_limit as u64;
     let root_dir_c = CString::new(sandbox_config.root_dir.to_str().unwrap()).unwrap();
 
+    // --- 4. Pre-Exec Hook ---
     unsafe {
         cmd.pre_exec(move || {
-            let pid = libc::getpid();
-            if fs::write(&cgroup_procs_file, pid.to_string()).is_err() {
-                libc::_exit(1);
+            // Helper for async-signal-safe file writing (avoids allocator deadlocks)
+            let write_sys = |path: &CString, data: &[u8]| -> bool {
+                let fd = libc::open(path.as_ptr(), libc::O_WRONLY);
+                if fd < 0 {
+                    return false;
+                }
+                let res = libc::write(fd, data.as_ptr() as *const libc::c_void, data.len());
+                libc::close(fd);
+                res == data.len() as isize
+            };
+
+            // Write PID to cgroups using basic math to avoid format! allocations
+            let mut pid = libc::getpid();
+            let mut pid_buf = [0u8; 32];
+            let mut temp = [0u8; 32];
+            let mut temp_len = 0;
+            while pid > 0 {
+                temp[temp_len] = b'0' + (pid % 10) as u8;
+                pid /= 10;
+                temp_len += 1;
             }
+            let mut i = 0;
+            while temp_len > 0 {
+                temp_len -= 1;
+                pid_buf[i] = temp[temp_len];
+                i += 1;
+            }
+            pid_buf[i] = b'\n';
+
+            if !write_sys(&cgroup_procs_file, &pid_buf[..i + 1]) {
+                libc::_exit(101);
+            }
+
+            // Unshare ALL EXCEPT user namespace first
             let flags = CloneFlags::CLONE_NEWPID
                 | CloneFlags::CLONE_NEWIPC
                 | CloneFlags::CLONE_NEWNET
                 | CloneFlags::CLONE_NEWUTS
-                | CloneFlags::CLONE_NEWNS
-                | CloneFlags::CLONE_NEWUSER;
+                | CloneFlags::CLONE_NEWNS;
             if unshare(flags).is_err() {
-                libc::_exit(1);
+                libc::_exit(102);
             }
 
-            for (src, tgt) in &mounts {
+            for (src, tgt, readonly) in &mounts {
                 if libc::mount(
                     src.as_ptr(),
                     tgt.as_ptr(),
@@ -296,25 +383,61 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
                     std::ptr::null(),
                 ) != 0
                 {
-                    libc::_exit(1);
+                    libc::_exit(103);
                 }
-                if libc::mount(
-                    src.as_ptr(),
-                    tgt.as_ptr(),
-                    b"bind\0".as_ptr() as *const i8,
-                    libc::MS_BIND | libc::MS_REC | libc::MS_REMOUNT | libc::MS_RDONLY,
-                    std::ptr::null(),
-                ) != 0
-                {
-                    libc::_exit(1);
+
+                if *readonly {
+                    if libc::mount(
+                        src.as_ptr(),
+                        tgt.as_ptr(),
+                        b"bind\0".as_ptr() as *const i8,
+                        libc::MS_BIND | libc::MS_REC | libc::MS_REMOUNT | libc::MS_RDONLY,
+                        std::ptr::null(),
+                    ) != 0
+                    {
+                        libc::_exit(104);
+                    }
                 }
             }
 
+            if libc::mount(
+                b"proc\0".as_ptr() as *const i8,
+                proc_tgt.as_ptr(),
+                b"proc\0".as_ptr() as *const i8,
+                0,
+                std::ptr::null(),
+            ) != 0
+            {
+                libc::_exit(105);
+            }
+
+            if libc::mount(
+                b"tmpfs\0".as_ptr() as *const i8,
+                tmp_tgt.as_ptr(),
+                b"tmpfs\0".as_ptr() as *const i8,
+                0,
+                b"size=128m,mode=1777\0".as_ptr() as *const libc::c_void,
+            ) != 0
+            {
+                libc::_exit(106);
+            }
+
             if libc::chroot(root_dir_c.as_ptr()) != 0 {
-                libc::_exit(1);
+                libc::_exit(107);
             }
             if libc::chdir(b"/\0".as_ptr() as *const i8) != 0 {
-                libc::_exit(1);
+                libc::_exit(108);
+            }
+            if libc::setgroups(0, std::ptr::null()) != 0 {
+                libc::_exit(110);
+            }
+
+            // Set GID and UID to 'nobody' (65534)
+            if libc::setgid(65534) != 0 {
+                libc::_exit(111);
+            }
+            if libc::setuid(65534) != 0 {
+                libc::_exit(112);
             }
 
             let cpu_rlim = libc::rlimit {
@@ -323,20 +446,20 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
             };
             libc::setrlimit(libc::RLIMIT_CPU, &cpu_rlim);
 
-            let proc_rlim = libc::rlimit {
-                rlim_cur: 64,
-                rlim_max: 64,
-            };
-            libc::setrlimit(libc::RLIMIT_NPROC, &proc_rlim);
-
             let core_rlim = libc::rlimit {
                 rlim_cur: 0,
                 rlim_max: 0,
             };
             libc::setrlimit(libc::RLIMIT_CORE, &core_rlim);
 
+            let fsize_rlim = libc::rlimit {
+                rlim_cur: 64 * 1024 * 1024,
+                rlim_max: 64 * 1024 * 1024,
+            };
+            libc::setrlimit(libc::RLIMIT_FSIZE, &fsize_rlim);
+
             if libc::dup2(out_fd, 3) < 0 {
-                libc::_exit(1);
+                libc::_exit(109);
             }
 
             Ok(())
@@ -346,9 +469,31 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     let mut child = cmd.spawn().map_err(|e| format!("Spawn failed: {}", e))?;
     let status = child.wait().map_err(|e| format!("Wait error: {}", e))?;
 
-    let _ = fs::remove_dir(&cgroup_path);
+    let cgroup_procs_file = format!("{}/cgroup.procs", cgroup_path);
 
-    use std::os::unix::process::ExitStatusExt;
+    loop {
+        let procs = fs::read_to_string(&cgroup_procs_file).unwrap_or_default();
+        let pids: Vec<i32> = procs
+            .lines()
+            .filter_map(|line| line.trim().parse::<i32>().ok())
+            .collect();
+
+        if pids.is_empty() {
+            break;
+        }
+
+        for pid in pids {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    if let Err(e) = fs::remove_dir(&cgroup_path) {
+        println!("warning failed to remove cgroups {} : {}", cgroup_path, e);
+    };
+
     let result = SandboxResult {
         exit_code: status.code().unwrap_or(-1),
         signal: status.signal(),
