@@ -12,15 +12,9 @@ use uuid::Uuid;
 use redis_lib::AppState;
 use types_lib::*;
 
-/// Pool-get timeout shared across all handlers.
 const POOL_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// TTL applied to every `status:{id}` key (1 hour).
 const STATUS_TTL_SECS: i64 = 600;
-
-// ---------------------------------------------------------------------------
-//  Handlers
-// ---------------------------------------------------------------------------
 
 pub async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json("the service is healthy"))
@@ -130,11 +124,6 @@ pub async fn status_get(
     Ok((StatusCode::OK, Json(response)))
 }
 
-// ---------------------------------------------------------------------------
-//  Internal helpers
-// ---------------------------------------------------------------------------
-
-/// Get a pooled Redis connection with a timeout so we never hang indefinitely.
 async fn get_conn_with_timeout(
     state: &Arc<AppState>,
 ) -> Result<deadpool_redis::Connection, (StatusCode, String)> {
@@ -173,7 +162,6 @@ async fn enqueue_task(
 
     let mut redis_con = get_conn_with_timeout(state).await?;
 
-    // Atomic pipeline: set status hash + add to stream + set TTL
     let _: () = redis::pipe()
         .atomic()
         .hset_multiple(format!("status:{}", random_id), &[("status", "pending")])

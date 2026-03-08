@@ -8,10 +8,6 @@ pub struct AppState {
     pub stream_name: String,
 }
 
-/// Creates a deadpool-redis connection pool.
-///
-/// `max_size` controls the maximum number of connections in the pool.
-/// Passing `None` uses deadpool's default (currently 16).
 pub fn redis_connection_pooler(
     redis_url: &str,
     max_size: Option<usize>,
@@ -33,8 +29,6 @@ pub fn redis_connection_pooler(
     cfg.create_pool(Some(Runtime::Tokio1))
 }
 
-/// Verifies the pool is healthy by issuing a PING.
-/// Call this at startup to fail-fast on bad config.
 pub async fn ping_redis(pool: &Pool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = pool.get().await?;
     let pong: String = redis::cmd("PING").query_async(&mut *conn).await?;
@@ -44,7 +38,6 @@ pub async fn ping_redis(pool: &Pool) -> Result<(), Box<dyn std::error::Error + S
     Ok(())
 }
 
-/// process the redis raw paylaod and return the formatted task vector
 pub fn process_redis_stream(reply: StreamReadReply) -> Vec<(String, TaskPayload)> {
     let mut extracted_tasks = Vec::new();
     for stream_key in reply.keys.into_iter() {

@@ -16,10 +16,7 @@ use tower_http::{
 };
 use tracing::info;
 
-/// Maximum request body size (1 MB).
 const MAX_BODY_SIZE: usize = 1_048_576;
-
-/// Per-request timeout for the entire handler chain.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::main]
@@ -37,7 +34,6 @@ async fn main() -> Result<()> {
     let redis_pool = redis_connection_pooler(&redisurl, pool_size)
         .context("Failed to create Redis connection pool")?;
 
-    // Fail-fast: verify Redis is reachable before accepting traffic.
     ping_redis(&redis_pool)
         .await
         .map_err(|e| anyhow::anyhow!("Redis health-check failed at startup: {e}"))?;
@@ -82,8 +78,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Listens for SIGINT (Ctrl+C) and SIGTERM (Docker/K8s stop) to trigger
-/// graceful shutdown — in-flight requests finish before the process exits.
 async fn shutdown_signal() {
     let ctrl_c = tokio::signal::ctrl_c();
 

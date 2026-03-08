@@ -225,9 +225,6 @@ pub struct LanguageConfig {
 
 impl LanguageConfig {
     pub fn get(language: &LanguageType) -> Self {
-        // Resolve binary paths at runtime so execve inside the sandbox works.
-        // Compilation runs on the host (tokio::process::Command searches PATH),
-        // but sandbox.run() uses execve which requires absolute paths.
         match language {
             LanguageType::Cpp => LanguageConfig {
                 source_filename: "main.cpp",
