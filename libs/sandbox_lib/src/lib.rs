@@ -2,6 +2,7 @@ use anyhow::Error;
 use nix::sched::{CloneFlags, unshare};
 use std::ffi::CString;
 use std::fs::{self};
+use std::os::fd::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -119,6 +120,10 @@ pub async fn execute_submissions_detached(
                 .await
                 .unwrap()
                 .into_std();
+            let user_output_file = tokio::fs::File::create(&user_output_file_path)
+                .await
+                .unwrap()
+                .into_std();
 
             // ==========================================
             // 4. BUILD THE CONFIGURATION
@@ -135,7 +140,7 @@ pub async fn execute_submissions_detached(
                 input_file: in_file.await,
                 output_file: out_file.await,
                 error_output: err_file.await,
-                user_output: user_output_file_path.clone(),
+                user_output: user_output_file.await,
 
                 run_cmd_exe: language_config.run_cmd.0.to_string(),
                 run_cmd_args: language_config
@@ -214,7 +219,7 @@ pub async fn execute_submissions_detached(
                     // 3. Process completed successfully, evaluate output
                     else {
                         // Read files asynchronously
-                        let actual_output = tokio::fs::read_to_string(&output_file_path)
+                        let actual_output = tokio::fs::read_to_string(&user_output_file_path)
                             .await
                             .unwrap_or_else(|_| "".to_string());
                         let actual_error = tokio::fs::read_to_string(&error_file_path)
@@ -269,11 +274,12 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     // 1. OPEN FILES FOR I/O REDIRECTION
     // ==========================================
     let in_file = sandbox_config.input_file;
-    // .map_err(|e| format!("Failed to open input file: {}", e))?;
     let out_file = sandbox_config.output_file;
-    // .map_err(|e| format!("Failed to create output file: {}", e))?;
     let err_file = sandbox_config.error_output;
-    // .map_err(|e| format!("Failed to create error file: {}))?;
+    let user_out_file = sandbox_config.user_output; // Extract user output file
+
+    // We get the raw file descriptor for output.txt so we can bind it to FD 3 later
+    let out_fd = out_file.as_raw_fd();
 
     // ==========================================
     // 2. CGROUPS V2
@@ -290,18 +296,15 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     // ==========================================
     // 3. PREPARE BIND MOUNTS FOR INTERPRETED LANGUAGES
     // ==========================================
-    // We must project these host directories into the sandbox so Python/Java can run.
     let bind_dirs = ["/bin", "/lib", "/lib64", "/usr", "/etc"];
     let mut mounts = Vec::new();
 
     for dir in &bind_dirs {
         let host_path = std::path::Path::new(dir);
         if host_path.exists() {
-            // Create the empty landing folder in the sandbox (e.g., /dev/shm/job_id/usr)
             let target_path = sandbox_config.root_dir.join(dir.trim_start_matches('/'));
             fs::create_dir_all(&target_path).unwrap_or_default();
 
-            // Prepare C-Strings to safely pass into the unsafe pre_exec closure
             let src = CString::new(*dir).unwrap();
             let tgt = CString::new(target_path.to_str().unwrap()).unwrap();
             mounts.push((src, tgt));
@@ -311,8 +314,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     // ==========================================
     // 4. PREPARE THE PAYLOAD & WIRE FILE DESCRIPTORS
     // ==========================================
-    // PATH TRANSLATION FOR CHROOT:
-    // If the config asks for "./solution", we must translate it to "/solution".
     let exe_path = if sandbox_config.run_cmd_exe.starts_with("./") {
         sandbox_config.run_cmd_exe.replacen(".", "", 1)
     } else {
@@ -322,9 +323,9 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     let mut cmd = Command::new(&exe_path);
     cmd.args(&sandbox_config.run_cmd_args);
 
-    // Wire the standard streams
+    // FIX: Standard Output now goes to user_output.txt (FD 1)
     cmd.stdin(Stdio::from(in_file));
-    cmd.stdout(Stdio::from(out_file));
+    cmd.stdout(Stdio::from(user_out_file));
     cmd.stderr(Stdio::from(err_file));
 
     // ==========================================
@@ -355,7 +356,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
 
             // C. BIND MOUNT THE HOST RUNTIMES
             for (src, tgt) in &mounts {
-                // 1. Create the bind mount
                 if libc::mount(
                     src.as_ptr(),
                     tgt.as_ptr(),
@@ -366,8 +366,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
                 {
                     libc::_exit(1);
                 }
-
-                // 2. Remount it as STRICTLY READ-ONLY so user code cannot alter host files
                 if libc::mount(
                     src.as_ptr(),
                     tgt.as_ptr(),
@@ -391,7 +389,7 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
             // E. APPLY HARDWARE AND TIME SAFETY NETS
             let cpu_rlim = libc::rlimit {
                 rlim_cur: time_limit,
-                rlim_max: time_limit+1,
+                rlim_max: time_limit + 1,
             };
             libc::setrlimit(libc::RLIMIT_CPU, &cpu_rlim);
 
@@ -406,6 +404,13 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
                 rlim_max: 0,
             };
             libc::setrlimit(libc::RLIMIT_CORE, &core_rlim);
+
+            // F. MAP FD 3 FOR EVALUATION OUTPUT
+            // dup2 duplicates `out_fd` specifically into FD 3 and strips the CLOEXEC flag
+            // so the sandboxed process can inherit and use it natively.
+            if libc::dup2(out_fd, 3) < 0 {
+                libc::_exit(1);
+            }
 
             Ok(())
         });
