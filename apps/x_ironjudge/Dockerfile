@@ -1,7 +1,7 @@
 FROM rust:latest AS builder
 WORKDIR /app
 COPY . .
-RUN cargo build --release
+RUN cargo build 
 
 FROM debian:latest AS runner
 WORKDIR /app
@@ -30,5 +30,5 @@ ENV GROUPNAME=$GROUPNAME
 ENV CONSUMERNAME=$CONSUMERNAME
 ENV REDISPAYLOADLEN=$REDISPAYLOADLEN
 
-COPY --from=builder /app/target/release/x_ironjudge /app/x_ironjudge
+COPY --from=builder /app/target/debug/x_ironjudge /app/x_ironjudge
 CMD ["./x_ironjudge"]
