@@ -22,14 +22,14 @@ pub struct SandboxResult {
 
 pub type SandboxError = String;
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Debug)]
 pub struct SandboxConfiguration {
     pub submissionid: String,
     pub root_dir: PathBuf,
-    pub input_file: PathBuf,
-    pub output_file: PathBuf,
+    pub input_file: std::fs::File,
+    pub output_file: std::fs::File,
     pub user_output: PathBuf,
-    pub error_output: PathBuf,
+    pub error_output: std::fs::File,
     pub time_limit: usize,
     pub memory_limit: usize,
     pub run_cmd_exe: String,
@@ -40,10 +40,10 @@ impl SandboxConfiguration {
     pub fn process(
         submissionid: String,
         root_dir: PathBuf,
-        input_file: PathBuf,
-        output_file: PathBuf,
+        input_file: std::fs::File,
+        output_file: std::fs::File,
         user_output: PathBuf,
-        error_output: PathBuf,
+        error_output: std::fs::File,
         time_limit: usize,
         memory_limit: usize,
         run_cmd_exe: String,

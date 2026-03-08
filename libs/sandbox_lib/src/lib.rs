@@ -1,7 +1,7 @@
 use anyhow::Error;
 use nix::sched::{CloneFlags, unshare};
 use std::ffi::CString;
-use std::fs::{self, File};
+use std::fs::{self};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::Instant;
@@ -63,7 +63,6 @@ pub async fn execute_submissions_detached(
                         "Failed to create temp directory for {}: {}",
                         submission_id, e
                     );
-                    drop(permit);
                     return;
                 }
             };
@@ -87,24 +86,39 @@ pub async fn execute_submissions_detached(
 
                 if !compile_status.success() {
                     println!("Compilation failed for {}", submission_id);
-                    drop(permit);
                     return;
                 }
             }
 
             // ==========================================
-            // 3. PREPARE I/O FILES & TESTCASES
+            // 3. PREPARE I/O FILES & TESTCASES ASYNC
             // ==========================================
             let (input_data, expected_output) = testcase_parsing(payload.testcases.clone());
+            let testcases_len = payload.testcases.len() as u32;
 
             let input_file_path = root_dir_path.join("input.txt");
             let output_file_path = root_dir_path.join("output.txt");
             let user_output_file_path = root_dir_path.join("user_output.txt");
             let error_file_path = root_dir_path.join("error.txt");
 
+            // Write input data asynchronously
             tokio::fs::write(&input_file_path, input_data)
                 .await
                 .unwrap();
+
+            // Open/Create files asynchronously and convert to std::fs::File for the blocking command
+            let in_file = tokio::fs::File::open(&input_file_path)
+                .await
+                .unwrap()
+                .into_std();
+            let out_file = tokio::fs::File::create(&output_file_path)
+                .await
+                .unwrap()
+                .into_std();
+            let err_file = tokio::fs::File::create(&error_file_path)
+                .await
+                .unwrap()
+                .into_std();
 
             // ==========================================
             // 4. BUILD THE CONFIGURATION
@@ -116,12 +130,13 @@ pub async fn execute_submissions_detached(
                 memory_limit: payload.memorylimit,
                 time_limit: time_limit_secs,
                 root_dir: root_dir_path.clone(),
-                input_file: input_file_path.clone(),
-                output_file: output_file_path.clone(),
-                error_output: error_file_path.clone(),
+
+                // Pass the open file handles directly
+                input_file: in_file.await,
+                output_file: out_file.await,
+                error_output: err_file.await,
                 user_output: user_output_file_path.clone(),
 
-                // Properly convert &'static str to String and Vec<String>
                 run_cmd_exe: language_config.run_cmd.0.to_string(),
                 run_cmd_args: language_config
                     .run_cmd
@@ -132,25 +147,78 @@ pub async fn execute_submissions_detached(
             };
 
             // ==========================================
-            // 5. EXECUTE THE SANDBOX
+            // 5. EXECUTE THE SANDBOX (BLOCKING)
             // ==========================================
-            let (sub_id, response) = tokio::task::spawn_blocking(move || {
-                println!("Starting sandbox execution for job: {}", submission_id);
+            let sub_id_clone = submission_id.clone();
 
-                match sandbox_runner(sandbox_config) {
-                    Ok(result) => {
-                        if result.signal == Some(9) {
-                            let response = ResponsePayload::success(
-                                Some("Time Limit or Memory Limit Exceeded".to_string()),
-                                0,
-                            );
-                            return (submission_id, response);
+            let sandbox_result = tokio::task::spawn_blocking(move || {
+                println!("Starting sandbox execution for job: {}", sub_id_clone);
+                sandbox_runner(sandbox_config)
+            })
+            .await
+            .expect("Blocking task panicked");
+
+            // ==========================================
+            // 6. ASYNC OUTPUT EVALUATION
+            // ==========================================
+            let response = match sandbox_result {
+                Ok(result) => {
+                    println!("sandbox result {:?}", &result);
+
+                    // 1. Process was killed by a Signal (e.g., Segfault, TLE, MLE)
+                    if let Some(signal) = result.signal {
+                        let error_msg = match signal {
+                            11 => "Runtime Error: Segmentation Fault (SIGSEGV)".to_string(),
+                            24 => "Time Limit Exceeded (CPU Time)".to_string(), // Killed by RLIMIT_CPU
+                            9 => {
+                                // SIGKILL: Check wall time against the payload limit to differentiate TLE vs MLE.
+                                // If it ran longer than the allowed time, it's TLE. Otherwise, OOM Killer stepped in.
+                                if result.wall_time_ms >= payload.timelimit as u128 {
+                                    "Time Limit Exceeded (Wall Time)".to_string()
+                                } else {
+                                    "Memory Limit Exceeded".to_string()
+                                }
+                            }
+                            8 => "Runtime Error: Floating Point Exception".to_string(),
+                            6 => "Runtime Error: Aborted (SIGABRT)".to_string(),
+                            _ => format!("Runtime Error: Killed by signal {}", signal),
+                        };
+
+                        println!("\n=== {} [{}] ===", error_msg, submission_id);
+
+                        // Print stderr if available for debugging
+                        let actual_error = tokio::fs::read_to_string(&error_file_path)
+                            .await
+                            .unwrap_or_default();
+                        if !actual_error.is_empty() {
+                            println!("Sandbox stderr:\n{}", actual_error);
                         }
 
-                        // 2. Just print exactly what the sandbox produced
-                        let actual_output = std::fs::read_to_string(&output_file_path)
+                        ResponsePayload::success(Some(error_msg), 0)
+                    }
+                    // 2. Process exited cleanly but with an error code
+                    else if result.exit_code != 0 {
+                        let error_msg = format!("Runtime Error (Exit Code: {})", result.exit_code);
+                        println!("\n=== {} [{}] ===", error_msg, submission_id);
+
+                        // Print stderr to show why it crashed
+                        let actual_error = tokio::fs::read_to_string(&error_file_path)
+                            .await
+                            .unwrap_or_default();
+                        if !actual_error.is_empty() {
+                            println!("Sandbox stderr:\n{}", actual_error);
+                        }
+
+                        ResponsePayload::success(Some(error_msg), 0)
+                    }
+                    // 3. Process completed successfully, evaluate output
+                    else {
+                        // Read files asynchronously
+                        let actual_output = tokio::fs::read_to_string(&output_file_path)
+                            .await
                             .unwrap_or_else(|_| "".to_string());
-                        let actual_error = std::fs::read_to_string(&error_file_path)
+                        let actual_error = tokio::fs::read_to_string(&error_file_path)
+                            .await
                             .unwrap_or_else(|_| "".to_string());
 
                         println!("\n=== STDOUT [{}] ===", submission_id);
@@ -162,13 +230,10 @@ pub async fn execute_submissions_detached(
                             println!("{}", actual_error);
                             println!("========================\n");
                         }
-                        if !actual_error.is_empty() {
-                            println!("Sandbox stderr: {}", actual_error);
-                        }
 
                         let is_match = actual_output.trim() == expected_output.trim();
                         let msg = if is_match {
-                            "Output matched!".to_string()
+                            "Accepted: Output matched!".to_string()
                         } else {
                             format!(
                                 "Wrong Answer.\nExpected:\n{}\nGot:\n{}",
@@ -177,25 +242,21 @@ pub async fn execute_submissions_detached(
                             )
                         };
 
-                        let response =
-                            ResponsePayload::success(Some(msg), payload.testcases.len() as u32);
-
-                        (submission_id, response)
-                    }
-                    Err(e) => {
-                        println!("Sandbox engine failed fundamentally: {}", e);
-                        let response = ResponsePayload::error();
-                        (submission_id, response)
+                        ResponsePayload::success(Some(msg), testcases_len)
                     }
                 }
-            })
-            .await
-            .expect("Blocking task panicked");
+                Err(e) => {
+                    println!("Sandbox engine failed fundamentally: {:?}", e);
+                    ResponsePayload::error()
+                }
+            };
 
             info!(
                 "Job {} completed with status: {:?}",
-                sub_id, response.status
+                submission_id, response.status
             );
+
+            // Drop permit at the end of the async flow
             drop(permit);
         });
     }
@@ -207,12 +268,12 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     // ==========================================
     // 1. OPEN FILES FOR I/O REDIRECTION
     // ==========================================
-    let in_file = File::open(&sandbox_config.input_file)
-        .map_err(|e| format!("Failed to open input file: {}", e))?;
-    let out_file = File::create(&sandbox_config.output_file)
-        .map_err(|e| format!("Failed to create output file: {}", e))?;
-    let err_file = File::create(&sandbox_config.error_output)
-        .map_err(|e| format!("Failed to create error file: {}", e))?;
+    let in_file = sandbox_config.input_file;
+    // .map_err(|e| format!("Failed to open input file: {}", e))?;
+    let out_file = sandbox_config.output_file;
+    // .map_err(|e| format!("Failed to create output file: {}", e))?;
+    let err_file = sandbox_config.error_output;
+    // .map_err(|e| format!("Failed to create error file: {}))?;
 
     // ==========================================
     // 2. CGROUPS V2
@@ -222,6 +283,7 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
 
     let mem_bytes = sandbox_config.memory_limit as u64 * 1024 * 1024;
     fs::write(format!("{}/memory.max", cgroup_path), mem_bytes.to_string()).unwrap();
+    let _ = fs::write(format!("{}/memory.swap.max", cgroup_path), "0");
     fs::write(format!("{}/cpu.max", cgroup_path), "100000 100000").unwrap();
     fs::write(format!("{}/pids.max", cgroup_path), "64").unwrap();
 
@@ -329,7 +391,7 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
             // E. APPLY HARDWARE AND TIME SAFETY NETS
             let cpu_rlim = libc::rlimit {
                 rlim_cur: time_limit,
-                rlim_max: time_limit,
+                rlim_max: time_limit+1,
             };
             libc::setrlimit(libc::RLIMIT_CPU, &cpu_rlim);
 
