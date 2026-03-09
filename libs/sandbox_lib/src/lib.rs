@@ -268,9 +268,6 @@ pub fn build_strict_seccomp_profile() -> Vec<libc::sock_filter> {
 
     let filter = SeccompFilter::new(
         rules,
-        // THE FIX: Change KillProcess to Errno(ENOSYS)
-        // This makes unknown syscalls act like they just don't exist in the OS,
-        // forcing Java and Bun to gracefully fallback to older, safe syscalls.
         SeccompAction::Errno(libc::ENOSYS as u32),
         SeccompAction::Allow,
         std::env::consts::ARCH.try_into().unwrap(),
@@ -308,7 +305,6 @@ pub async fn execute_submissions_detached(
         let g_name = group_name.clone();
 
         tokio::spawn(async move {
-            // Set processing status in Redis
             if let Err(e) = set_processing_status(&pool, &submission_id).await {
                 error!(
                     "Failed to set processing status for {}: {}",
@@ -436,7 +432,6 @@ pub async fn execute_submissions_detached(
             .await
             .expect("Blocking task panicked");
 
-            // Read fd3 output (test case answers) from output.txt
             let fd3_string = tokio::fs::read_to_string(&output_file_path)
                 .await
                 .unwrap_or_default();
@@ -446,7 +441,6 @@ pub async fn execute_submissions_detached(
                 .filter(|line| !line.is_empty())
                 .collect();
 
-            // Read user stdout (console output) from user_output.txt
             let user_stdout_raw = tokio::fs::read_to_string(&user_output_file_path)
                 .await
                 .unwrap_or_default();
@@ -458,8 +452,6 @@ pub async fn execute_submissions_detached(
 
             let response = match sandbox_result {
                 Ok(result) => {
-                    // The double-fork pattern encodes child signals as exit code 128+signal.
-                    // Decode the actual signal from either source.
                     let effective_signal = result.signal.or_else(|| {
                         if result.exit_code > 128 {
                             Some(result.exit_code - 128)
@@ -468,7 +460,16 @@ pub async fn execute_submissions_detached(
                         }
                     });
 
-                    if let Some(signal) = effective_signal {
+                    let actual_error = tokio::fs::read_to_string(&error_file_path)
+                        .await
+                        .unwrap_or_default();
+
+                    // --- THE FIX: Cgroup Telemetry priority check ---
+                    if result.is_oom {
+                        ResponsePayload::memory_error(0, user_stdout.clone())
+                    } 
+                    // ------------------------------------------------
+                    else if let Some(signal) = effective_signal {
                         let error_msg = match signal {
                             11 => "Runtime Error: Segmentation Fault (SIGSEGV)".to_string(),
                             24 => "Time Limit Exceeded (CPU Time)".to_string(),
@@ -476,7 +477,8 @@ pub async fn execute_submissions_detached(
                                 if result.wall_time_ms >= payload.timelimit as u128 {
                                     "Time Limit Exceeded (Wall Time)".to_string()
                                 } else {
-                                    "Memory Limit Exceeded".to_string()
+                                    // Fallback if cgroup telemetry failed for some reason
+                                    "Memory Limit Exceeded / Killed".to_string()
                                 }
                             }
                             8 => "Runtime Error: Floating Point Exception".to_string(),
@@ -485,10 +487,6 @@ pub async fn execute_submissions_detached(
                                 .to_string(),
                             _ => format!("Runtime Error: Killed by signal {}", signal),
                         };
-
-                        let actual_error = tokio::fs::read_to_string(&error_file_path)
-                            .await
-                            .unwrap_or_default();
 
                         match signal {
                             24 => ResponsePayload::time_error(0, user_stdout.clone()),
@@ -515,10 +513,6 @@ pub async fn execute_submissions_detached(
                         }
                     } else if result.exit_code != 0 {
                         let error_msg = format!("Runtime Error (Exit Code: {})", result.exit_code);
-                        let actual_error = tokio::fs::read_to_string(&error_file_path)
-                            .await
-                            .unwrap_or_default();
-
                         let full_err_msg = if actual_error.is_empty() {
                             error_msg
                         } else {
@@ -532,7 +526,6 @@ pub async fn execute_submissions_detached(
                             None,
                         )
                     } else {
-                        // SUCCESS path: use validate_test_cases with fd3 output
                         validate_test_cases(
                             fd3_lines,
                             &payload.testcases,
@@ -547,7 +540,6 @@ pub async fn execute_submissions_detached(
                 }
             };
 
-            // Push final result to Redis
             if let Err(e) = push_result_to_redis(&pool, &submission_id, &response).await {
                 error!(
                     "Failed to push result to Redis for {}: {}",
@@ -555,7 +547,6 @@ pub async fn execute_submissions_detached(
                 );
             }
 
-            // Acknowledge the stream message so it won't be re-delivered
             if let Err(e) =
                 acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await
             {
@@ -601,58 +592,47 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     let user_out_file = sandbox_config.user_output;
     let out_fd = out_file.as_raw_fd();
 
-    // 1. Secure chroot permissions
     let mut perms = fs::metadata(&sandbox_config.root_dir)
         .unwrap()
         .permissions();
     perms.set_mode(0o777);
     let _ = fs::set_permissions(&sandbox_config.root_dir, perms);
 
-    // 2. Prepare strict directory layout
-        let old_root = sandbox_config.root_dir.join("oldroot");
-        fs::create_dir_all(&old_root).expect("Failed to create oldroot dir");
-        fs::create_dir_all(sandbox_config.root_dir.join("proc")).expect("Failed to create proc dir");
-        fs::create_dir_all(sandbox_config.root_dir.join("tmp")).expect("Failed to create tmp dir");
-        fs::create_dir_all(sandbox_config.root_dir.join("dev/shm"))
-            .expect("Failed to create dev/shm dir");
+    let old_root = sandbox_config.root_dir.join("oldroot");
+    fs::create_dir_all(&old_root).expect("Failed to create oldroot dir");
+    fs::create_dir_all(sandbox_config.root_dir.join("proc")).expect("Failed to create proc dir");
+    fs::create_dir_all(sandbox_config.root_dir.join("tmp")).expect("Failed to create tmp dir");
+    fs::create_dir_all(sandbox_config.root_dir.join("dev/shm"))
+        .expect("Failed to create dev/shm dir");
     
-        // 3. Setup Cgroups v2
-        // CRITICAL: Enable controllers in parent cgroup's subtree_control
-        // Without this, child cgroups cannot enforce memory/cpu/pids limits.
+    let init_cgroup = "/sys/fs/cgroup/init";
+    fs::create_dir_all(init_cgroup).unwrap_or_default();
     
-        // --- THE FIX: Satisfy cgroup v2 "No Internal Processes" rule ---
-        // Move the main ironjudge process into an "init" subdirectory 
-        // so the root cgroup is empty and allowed to delegate controllers.
-        let init_cgroup = "/sys/fs/cgroup/init";
-        fs::create_dir_all(init_cgroup).unwrap_or_default();
-        
-        let my_pid = std::process::id();
-        if let Err(e) = fs::write(format!("{}/cgroup.procs", init_cgroup), my_pid.to_string()) {
-            println!("[cgroup] Warning: failed to move executor to init cgroup: {}", e);
-        }
-        // ---------------------------------------------------------------
+    let my_pid = std::process::id();
+    if let Err(e) = fs::write(format!("{}/cgroup.procs", init_cgroup), my_pid.to_string()) {
+        println!("[cgroup] Warning: failed to move executor to init cgroup: {}", e);
+    }
     
-        // Log current state for diagnostics
-        let current_subtree = fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
-            .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
-        println!(
-            "[cgroup] Current subtree_control: {}",
-            current_subtree.trim()
-        );
+    let current_subtree = fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
+        .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
+    println!(
+        "[cgroup] Current subtree_control: {}",
+        current_subtree.trim()
+    );
     
-        match fs::write(
-            "/sys/fs/cgroup/cgroup.subtree_control",
-            "+memory +cpu +pids",
-        ) {
-            Ok(_) => println!("[cgroup] subtree_control delegation: OK"),
-            Err(e) => println!(
-                "[cgroup] subtree_control delegation FAILED: {} (limits may not work!)",
-                e
-            ),
-        }
+    match fs::write(
+        "/sys/fs/cgroup/cgroup.subtree_control",
+        "+memory +cpu +pids",
+    ) {
+        Ok(_) => println!("[cgroup] subtree_control delegation: OK"),
+        Err(e) => println!(
+            "[cgroup] subtree_control delegation FAILED: {} (limits may not work!)",
+            e
+        ),
+    }
     
-        let cgroup_path = format!("/sys/fs/cgroup/dsa_{}", sandbox_config.submissionid);
-        fs::create_dir_all(&cgroup_path).map_err(|e| format!("Cgroup error: {}", e))?;
+    let cgroup_path = format!("/sys/fs/cgroup/dsa_{}", sandbox_config.submissionid);
+    fs::create_dir_all(&cgroup_path).map_err(|e| format!("Cgroup error: {}", e))?;
     
     let mem_bytes = sandbox_config.memory_limit as u64 * 1024 * 1024;
     fs::write(format!("{}/memory.max", cgroup_path), mem_bytes.to_string()).unwrap();
@@ -660,7 +640,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     fs::write(format!("{}/cpu.max", cgroup_path), "100000 100000").unwrap();
     fs::write(format!("{}/pids.max", cgroup_path), "512").unwrap();
 
-    // Verify memory.max was actually set
     let actual_mem = fs::read_to_string(format!("{}/memory.max", cgroup_path))
         .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
     println!(
@@ -669,7 +648,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
         mem_bytes
     );
 
-    // Check which controllers are active in the child cgroup
     let child_controllers = fs::read_to_string(format!("{}/cgroup.controllers", cgroup_path))
         .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
     println!(
@@ -677,8 +655,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
         child_controllers.trim()
     );
 
-    // 4. Pre-calculate CStrings for pure Async-Signal-Safety
-    // THE FIX: We split Read-Only system directories and Writable Device files into two separate lists.
     let readonly_dirs = [
         "/bin",
         "/lib",
@@ -747,7 +723,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     let time_limit = sandbox_config.time_limit as u64;
     let bpf_instructions = build_strict_seccomp_profile();
 
-    // --- 5. The Hardened Pre-Exec Hook ---
     unsafe {
         cmd.pre_exec(move || {
             let write_sys = |path: &CString, data: &[u8]| -> bool {
@@ -846,7 +821,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
                 libc::_exit(121);
             }
 
-            // THE FIX: System Mounts (Explicitly add NOSUID and NODEV, drop MS_REC on remount)
             for (src, tgt) in &ro_mounts_c {
                 if libc::mount(
                     src.as_ptr(),
@@ -876,7 +850,6 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
                 }
             }
 
-            // THE FIX: Device Mounts (Bind only, DO NOT remount read-only, DO NOT use NODEV)
             for (src, tgt) in &dev_mounts_c {
                 if libc::mount(
                     src.as_ptr(),
@@ -983,6 +956,25 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     let mut child = cmd.spawn().map_err(|e| format!("Spawn failed: {}", e))?;
     let status = child.wait().map_err(|e| format!("Wait error: {}", e))?;
 
+    // --- THE FIX: Parse cgroups memory events before deleting the directory ---
+    let events_path = format!("{}/memory.events", cgroup_path);
+    let events_data = fs::read_to_string(&events_path).unwrap_or_default();
+    
+    let mut is_oom = false;
+    for line in events_data.lines() {
+        if line.starts_with("oom_kill ") || line.starts_with("oom ") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() == 2 {
+                if let Ok(count) = parts[1].parse::<u32>() {
+                    if count > 0 {
+                        is_oom = true;
+                    }
+                }
+            }
+        }
+    }
+    // ------------------------------------------------------------------------
+
     let cgroup_procs_file = format!("{}/cgroup.procs", cgroup_path);
     loop {
         let procs = fs::read_to_string(&cgroup_procs_file).unwrap_or_default();
@@ -1009,6 +1001,7 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
         exit_code: status.code().unwrap_or(-1),
         signal: status.signal(),
         wall_time_ms: start_time.elapsed().as_millis(),
+        is_oom, // --- NEW: Add the OOM telemetry to the returned result ---
     };
 
     println!("sandbox result {:?}", result);

@@ -19,6 +19,7 @@ pub struct SandboxResult {
     pub exit_code: i32,
     pub signal: Option<i32>,
     pub wall_time_ms: u128,
+    pub is_oom: bool,
 }
 
 pub type SandboxError = String;
