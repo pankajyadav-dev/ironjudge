@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct TaskPayload {
+    #[serde(default = "default_tasktype")]
     pub tasktype: TaskType,
     pub code: String,
     pub testcases: Vec<TestCaseType>,
@@ -71,6 +72,24 @@ pub struct TestCaseType {
     pub output: String,
 }
 
+/// For Run task type: original test case + actual result
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct TestCaseResult {
+    pub id: i32,
+    pub input: String,
+    pub output: String,
+    pub result: String,
+}
+
+/// For Test task type: details of the first failed test case
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct FailedTestDetail {
+    pub id: i32,
+    pub input: String,
+    pub expected: String,
+    pub actual: String,
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SubmissionIdPayload {
     pub submissionid: String,
@@ -92,6 +111,8 @@ pub struct ResponsePayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stdout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub results: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub failedcase: Option<String>,
 }
 
@@ -103,17 +124,19 @@ impl ResponsePayload {
             error: None,
             ttpassed: 0,
             stdout: None,
+            results: None,
             failedcase: None,
         }
     }
-    pub fn test_failed() -> Self {
+    pub fn test_failed(ttpassed: u32, failedcase: Option<String>, stdout: Option<String>) -> Self {
         Self {
             status: StatusType::Completed,
             message: MessageType::Testcasefailed,
             error: None,
-            ttpassed: 0,
-            stdout: None,
-            failedcase: None,
+            ttpassed,
+            stdout,
+            results: None,
+            failedcase,
         }
     }
     pub fn error() -> Self {
@@ -123,17 +146,19 @@ impl ResponsePayload {
             error: None,
             ttpassed: 0,
             stdout: None,
+            results: None,
             failedcase: None,
         }
     }
 
-    pub fn success(stdout: Option<String>, tests: u32) -> Self {
+    pub fn success(stdout: Option<String>, results: Option<String>, tests: u32) -> Self {
         Self {
             status: StatusType::Completed,
             message: MessageType::Success,
             error: None,
             ttpassed: tests,
-            stdout: stdout,
+            stdout,
+            results,
             failedcase: None,
         }
     }
@@ -145,6 +170,7 @@ impl ResponsePayload {
             error: err,
             ttpassed: 0,
             stdout: None,
+            results: None,
             failedcase: None,
         }
     }
@@ -152,7 +178,7 @@ impl ResponsePayload {
     pub fn runtime_error(
         err: Option<String>,
         testpassed: u32,
-        stdoutput: Option<String>,
+        stdout: Option<String>,
         failedcase: Option<String>,
     ) -> Self {
         Self {
@@ -160,28 +186,31 @@ impl ResponsePayload {
             message: MessageType::RunTimeError,
             error: err,
             ttpassed: testpassed,
-            stdout: stdoutput,
-            failedcase: failedcase,
+            stdout,
+            results: None,
+            failedcase,
         }
     }
 
-    pub fn time_error(tests: u32) -> Self {
+    pub fn time_error(tests: u32, stdout: Option<String>) -> Self {
         Self {
             status: StatusType::Completed,
             message: MessageType::TimeLimitError,
             error: Some("Time Limit Exceeded".to_string()),
             ttpassed: tests,
-            stdout: None,
+            stdout,
+            results: None,
             failedcase: None,
         }
     }
-    pub fn memory_error(tests: u32) -> Self {
+    pub fn memory_error(tests: u32, stdout: Option<String>) -> Self {
         Self {
             status: StatusType::Completed,
             message: MessageType::MemoryLimitError,
             error: Some("Memory Limit Exceeded".to_string()),
             ttpassed: tests,
-            stdout: None,
+            stdout,
+            results: None,
             failedcase: None,
         }
     }
@@ -274,6 +303,9 @@ impl LanguageConfig {
     }
 }
 
+fn default_tasktype() -> TaskType {
+    TaskType::Run
+}
 fn default_time() -> usize {
     2000
 }

@@ -22,8 +22,9 @@ pub async fn health() -> impl IntoResponse {
 
 pub async fn test_post(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<TaskPayload>,
+    Json(mut payload): Json<TaskPayload>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    payload.tasktype = TaskType::Test;
     let random_id = enqueue_task(&state, &payload, "test").await?;
     let response = SubmissionIdPayload::success(random_id);
     Ok((StatusCode::OK, Json(response)))
@@ -31,8 +32,9 @@ pub async fn test_post(
 
 pub async fn run_post(
     State(state): State<Arc<AppState>>,
-    Json(payload): Json<TaskPayload>,
+    Json(mut payload): Json<TaskPayload>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    payload.tasktype = TaskType::Run;
     let random_id = enqueue_task(&state, &payload, "run").await?;
     let response = SubmissionIdPayload::success(random_id);
     Ok((StatusCode::OK, Json(response)))
@@ -80,9 +82,11 @@ pub async fn status_get(
             let error = task_status.get("error").cloned();
             let stdout = task_status.get("stdout").cloned();
             let failed_case = task_status.get("failedcase").cloned();
+            let results = task_status.get("results").cloned();
 
             let lifecycle = match task_status.get("message").map(|s| s.as_str()) {
                 Some("success") => MessageType::Success,
+                Some("testcasefailed") => MessageType::Testcasefailed,
                 Some("compile_time_error") => MessageType::CompileTimeError,
                 Some("run_time_error") => MessageType::RunTimeError,
                 Some("memory_limit_error") => MessageType::MemoryLimitError,
@@ -97,13 +101,14 @@ pub async fn status_get(
                 .unwrap_or(0);
 
             match lifecycle {
-                MessageType::Success => ResponsePayload::success(stdout, ttpassed),
+                MessageType::Success => ResponsePayload::success(stdout, results, ttpassed),
+                MessageType::Testcasefailed => ResponsePayload::test_failed(ttpassed, failed_case, stdout),
                 MessageType::CompileTimeError => ResponsePayload::compiler_error(error),
                 MessageType::RunTimeError => {
                     ResponsePayload::runtime_error(error, ttpassed, stdout, failed_case)
                 }
-                MessageType::TimeLimitError => ResponsePayload::time_error(ttpassed),
-                MessageType::MemoryLimitError => ResponsePayload::memory_error(ttpassed),
+                MessageType::TimeLimitError => ResponsePayload::time_error(ttpassed, stdout),
+                MessageType::MemoryLimitError => ResponsePayload::memory_error(ttpassed, stdout),
                 _ => {
                     error!(submission_id = %id, "Task completed but encountered an unknown lifecycle message");
                     ResponsePayload::error()

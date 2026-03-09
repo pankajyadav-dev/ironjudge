@@ -1,5 +1,6 @@
 use anyhow::Error;
 use nix::sched::{CloneFlags, unshare};
+use redis_lib::{acknowledge_stream_message, push_result_to_redis, set_processing_status, RedisPool};
 use seccompiler::{BpfProgram, SeccompAction, SeccompFilter};
 use std::convert::TryInto;
 use std::ffi::CString;
@@ -12,9 +13,10 @@ use std::time::Instant;
 use std::{sync::Arc, thread::available_parallelism};
 use tempfile::{Builder, TempDir};
 use tokio::sync::Semaphore;
-use tracing::info;
+use tracing::{error, info};
 use types_lib::{
-    LanguageConfig, ResponsePayload, SandboxConfiguration, SandboxError, SandboxResult, TaskPayload, TaskType, TestCaseType,StatusType,MessageType
+    FailedTestDetail, LanguageConfig, ResponsePayload, SandboxConfiguration, SandboxError,
+    SandboxResult, TaskPayload, TaskType, TestCaseResult, TestCaseType,
 };
 // use redis_lib::redis_connection_pooler;
 
@@ -48,36 +50,81 @@ pub fn testcase_parsing(payload: Vec<TestCaseType>) -> (String, Vec<String>) {
 }
 
 
-pub fn validate_test_cases(code_output:Vec<String>,expected_output:Vec<String>,tasktype: TaskType)-> ResponsePayload{
-    match tasktype{
-        TaskType::Run=>{
-            ResponsePayload {
-                status: StatusType::Completed,
-                message: MessageType::Testcasefailed,
-                error: None,
-                ttpassed: code_output.len() as u32,
-                stdout: None,
-                failedcase: None,
-            }
+pub fn validate_test_cases(
+    fd3_output: Vec<String>,
+    testcases: &[TestCaseType],
+    tasktype: &TaskType,
+    user_stdout: Option<String>,
+) -> ResponsePayload {
+    match tasktype {
+        TaskType::Run => {
+            // Build enriched test case results from fd3 output
+            let results: Vec<TestCaseResult> = testcases
+                .iter()
+                .enumerate()
+                .map(|(i, tc)| {
+                    let result = fd3_output.get(i).cloned().unwrap_or_default();
+                    TestCaseResult {
+                        id: tc.id,
+                        input: tc.input.trim().to_string(),
+                        output: tc.output.trim().to_string(),
+                        result,
+                    }
+                })
+                .collect();
+
+            let results_json = serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string());
+            ResponsePayload::success(user_stdout, Some(results_json), testcases.len() as u32)
         }
-        TaskType::Test=>{
-            let mut failed = false;
-            let mut failed_case = None;
-            for (i, (co, eo)) in code_output.iter().zip(expected_output.iter()).enumerate() {
-                if co != eo {
-                    failed = true;
-                    failed_case = Some(i.to_string());
-                    break;
+        TaskType::Test => {
+            // Compare each test case output line against expected using fd3 output
+            let expected: Vec<String> = testcases
+                .iter()
+                .flat_map(|tc| {
+                    tc.output
+                        .lines()
+                        .map(|l| l.trim().to_string())
+                        .filter(|l| !l.is_empty())
+                })
+                .collect();
+
+            let total = expected.len();
+            let mut passed: u32 = 0;
+
+            for (i, exp) in expected.iter().enumerate() {
+                let actual = fd3_output.get(i).map(|s| s.as_str()).unwrap_or("");
+                if actual != exp.as_str() {
+                    // Find which original test case this line belongs to
+                    let mut line_cursor = 0;
+                    let mut failed_tc = &testcases[0];
+                    for tc in testcases {
+                        let tc_line_count = tc
+                            .output
+                            .lines()
+                            .filter(|l| !l.trim().is_empty())
+                            .count();
+                        if i < line_cursor + tc_line_count {
+                            failed_tc = tc;
+                            break;
+                        }
+                        line_cursor += tc_line_count;
+                    }
+
+                    let detail = FailedTestDetail {
+                        id: failed_tc.id,
+                        input: failed_tc.input.trim().to_string(),
+                        expected: exp.clone(),
+                        actual: actual.to_string(),
+                    };
+                    let detail_json =
+                        serde_json::to_string(&detail).unwrap_or_else(|_| "{}".to_string());
+                    return ResponsePayload::test_failed(passed, Some(detail_json), user_stdout);
                 }
+                passed += 1;
             }
-            ResponsePayload {
-                status: if failed { StatusType::Error } else { StatusType::Completed },
-                message: if failed { MessageType::Error } else { MessageType::Error },
-                error: None,
-                ttpassed: code_output.len() as u32,
-                stdout: None,
-                failedcase: failed_case,
-            }
+
+            // All matched
+            ResponsePayload::success(user_stdout, None, total as u32)
         }
     }
 }
@@ -249,24 +296,35 @@ pub fn build_strict_seccomp_profile() -> Vec<libc::sock_filter> {
 }
 
 pub async fn execute_submissions_detached(
-    tasks: Vec<(String, TaskPayload)>,
+    tasks: Vec<(String, String, TaskPayload)>,
     concurrency_limiter: Arc<Semaphore>,
+    redis_pool: Arc<RedisPool>,
+    stream_key: String,
+    group_name: String,
 ) {
-    for (submission_id, payload) in tasks {
+    for (stream_entry_id, submission_id, payload) in tasks {
         let permit = concurrency_limiter
             .clone()
             .acquire_owned()
             .await
             .expect("Semaphore closed");
+        let pool = redis_pool.clone();
+        let s_key = stream_key.clone();
+        let g_name = group_name.clone();
 
         tokio::spawn(async move {
+            // Set processing status in Redis
+            if let Err(e) = set_processing_status(&pool, &submission_id).await {
+                error!("Failed to set processing status for {}: {}", submission_id, e);
+            }
+
             let temp_dir = match create_temp_file(&submission_id).await {
                 Ok(dir) => dir,
                 Err(e) => {
-                    println!(
-                        "Failed to create temp directory for {}: {}",
-                        submission_id, e
-                    );
+                    error!("Failed to create temp directory for {}: {}", submission_id, e);
+                    let resp = ResponsePayload::error();
+                    let _ = push_result_to_redis(&pool, &submission_id, &resp).await;
+                    let _ = acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await;
                     return;
                 }
             };
@@ -277,33 +335,45 @@ pub async fn execute_submissions_detached(
             tokio::fs::write(&source_path, &payload.code).await.unwrap();
 
             if let Some((compiler, args)) = &language_config.compile_cmd {
-                let compile_status = tokio::process::Command::new(compiler)
+                let _error_file_path = root_dir_path.join("compile_error.txt");
+                let compile_result = tokio::process::Command::new(compiler)
                     .args(args)
                     .current_dir(&root_dir_path)
-                    .status()
-                    .await
-                    .unwrap();
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .output()
+                    .await;
 
-                if !compile_status.success() {
-                    println!("Compilation failed for {}", submission_id);
-                    return;
+                match compile_result {
+                    Ok(output) => {
+                        if !output.status.success() {
+                            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                            info!("Compilation failed for {}: {}", submission_id, stderr);
+                            let resp = ResponsePayload::compiler_error(Some(stderr));
+                            let _ = push_result_to_redis(&pool, &submission_id, &resp).await;
+                            let _ = acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await;
+                            drop(permit);
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let resp = ResponsePayload::compiler_error(Some(format!("Compiler not found: {}", e)));
+                        let _ = push_result_to_redis(&pool, &submission_id, &resp).await;
+                        let _ = acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await;
+                        drop(permit);
+                        return;
+                    }
                 }
             }
 
-            println!("Compilation is completed");
+            info!("Compilation completed for {}", submission_id);
 
-            let (input_data, expected_output) = testcase_parsing(payload.testcases.clone());
-            let testcases_len = payload.testcases.len() as u32;
+            let (input_data, _expected_output) = testcase_parsing(payload.testcases.clone());
             let input_file_path = root_dir_path.join("input.txt");
             let output_file_path = root_dir_path.join("output.txt");
             let user_output_file_path = root_dir_path.join("user_output.txt");
             let error_file_path = root_dir_path.join("error.txt");
-            
-            for (i, line) in expected_output.iter().enumerate() {
-                println!("Expected output for testcase {}: {}", i + 1, line);
-            }
-            
-            
+
             tokio::fs::write(&input_file_path, input_data)
                 .await
                 .unwrap();
@@ -347,27 +417,45 @@ pub async fn execute_submissions_detached(
 
             let sub_id_clone = submission_id.clone();
             let sandbox_result = tokio::task::spawn_blocking(move || {
-                println!("Starting sandbox execution for job: {}", sub_id_clone);
+                info!("Starting sandbox execution for job: {}", sub_id_clone);
                 sandbox_runner(sandbox_config)
             })
             .await
             .expect("Blocking task panicked");
-            
-            //test output vector
-            let output_string = tokio::fs::read_to_string(&output_file_path).await.unwrap_or_default();
-            let output_lines: Vec<String> = output_string.lines().map(|l| l.trim().to_string()).filter(|line| !line.is_empty()).collect();
-            println!("the output line {:?}",output_lines);
-            
-            for (i, line) in output_lines.iter().enumerate() {
-                println!("Output for testcase {}: {}", i + 1, line);
-            }
-            
-            println!("the output is mathced {:?}", output_lines==expected_output);
-            
-            
+
+            // Read fd3 output (test case answers) from output.txt
+            let fd3_string = tokio::fs::read_to_string(&output_file_path)
+                .await
+                .unwrap_or_default();
+            let fd3_lines: Vec<String> = fd3_string
+                .lines()
+                .map(|l| l.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect();
+
+            // Read user stdout (console output) from user_output.txt
+            let user_stdout_raw = tokio::fs::read_to_string(&user_output_file_path)
+                .await
+                .unwrap_or_default();
+            let user_stdout = if user_stdout_raw.trim().is_empty() {
+                None
+            } else {
+                Some(user_stdout_raw)
+            };
+
             let response = match sandbox_result {
                 Ok(result) => {
-                    if let Some(signal) = result.signal {
+                    // The double-fork pattern encodes child signals as exit code 128+signal.
+                    // Decode the actual signal from either source.
+                    let effective_signal = result.signal.or_else(|| {
+                        if result.exit_code > 128 {
+                            Some(result.exit_code - 128)
+                        } else {
+                            None
+                        }
+                    });
+
+                    if let Some(signal) = effective_signal {
                         let error_msg = match signal {
                             11 => "Runtime Error: Segmentation Fault (SIGSEGV)".to_string(),
                             24 => "Time Limit Exceeded (CPU Time)".to_string(),
@@ -381,37 +469,24 @@ pub async fn execute_submissions_detached(
                             8 => "Runtime Error: Floating Point Exception".to_string(),
                             6 => "Runtime Error: Aborted (SIGABRT)".to_string(),
                             31 => "Security Violation: Unauthorized System Call Blocked (SIGSYS)"
-                                .to_string(), // BPF Catch
+                                .to_string(),
                             _ => format!("Runtime Error: Killed by signal {}", signal),
                         };
-                        println!("\n=== {} [{}] ===", error_msg, submission_id);
 
                         let actual_error = tokio::fs::read_to_string(&error_file_path)
                             .await
                             .unwrap_or_default();
-                        let actual_output = tokio::fs::read_to_string(&user_output_file_path)
-                            .await
-                            .unwrap_or_default();
 
-                        if !actual_error.is_empty() {
-                            println!("Sandbox stderr:\n{}", actual_error);
-                        }
-                        if !actual_output.is_empty() {
-                            println!("Sandbox stdout:\n{}", actual_output);
-                        }
-
-                        // Map specific signals to the new ResponsePayload methods
                         match signal {
-                            24 => ResponsePayload::time_error(0),
+                            24 => ResponsePayload::time_error(0, user_stdout.clone()),
                             9 => {
                                 if result.wall_time_ms >= payload.timelimit as u128 {
-                                    ResponsePayload::time_error(0)
+                                    ResponsePayload::time_error(0, user_stdout.clone())
                                 } else {
-                                    ResponsePayload::memory_error(0)
+                                    ResponsePayload::memory_error(0, user_stdout.clone())
                                 }
                             }
                             _ => {
-                                // Combine the signal message and actual stderr for runtime errors
                                 let full_err_msg = if actual_error.is_empty() {
                                     error_msg
                                 } else {
@@ -420,28 +495,17 @@ pub async fn execute_submissions_detached(
                                 ResponsePayload::runtime_error(
                                     Some(full_err_msg),
                                     0,
-                                    Some(actual_output),
+                                    user_stdout.clone(),
                                     None,
                                 )
                             }
                         }
                     } else if result.exit_code != 0 {
-                        let error_msg = format!("Runtime Error (Exit Code: {})", result.exit_code);
-                        println!("\n=== {} [{}] ===", error_msg, submission_id);
-
+                        let error_msg =
+                            format!("Runtime Error (Exit Code: {})", result.exit_code);
                         let actual_error = tokio::fs::read_to_string(&error_file_path)
                             .await
                             .unwrap_or_default();
-                        let actual_output = tokio::fs::read_to_string(&user_output_file_path)
-                            .await
-                            .unwrap_or_default();
-
-                        if !actual_error.is_empty() {
-                            println!("Sandbox stderr:\n{}", actual_error);
-                        }
-                        if !actual_output.is_empty() {
-                            println!("Sandbox stdout:\n{}", actual_output);
-                        }
 
                         let full_err_msg = if actual_error.is_empty() {
                             error_msg
@@ -452,58 +516,38 @@ pub async fn execute_submissions_detached(
                         ResponsePayload::runtime_error(
                             Some(full_err_msg),
                             0,
-                            Some(actual_output),
+                            user_stdout.clone(),
                             None,
                         )
                     } else {
-                        let actual_output = tokio::fs::read_to_string(&user_output_file_path)
-                            .await
-                            .unwrap_or_default();
-                        let output = tokio::fs::read_to_string(&output_file_path)
-                            .await
-                            .unwrap_or_default();
-                        let actual_error = tokio::fs::read_to_string(&error_file_path)
-                            .await
-                            .unwrap_or_default();
-
-                        println!("\n=== STDOUT [{}] ===", submission_id);
-                        println!("{}", actual_output);
-                        println!("========================\n");
-                        println!("\n=== output STDOUT [{}] ===", submission_id);
-                        println!("{}", output);
-                        println!("========================\n");
-
-                        if !actual_error.is_empty() {
-                            println!("\n=== STDERR [{}] ===", submission_id);
-                            println!("{}", actual_error);
-                            println!("========================\n");
-                        }
-
-                        // let is_match = actual_output.trim() == expected_output.trim();
-                        // let msg = if is_match {
-                        //     "Accepted: Output matched!".to_string()
-                        // } else {
-                        //     format!(
-                        //         "Wrong Answer.\nExpected:\n{}\nGot:\n{}",
-                        //         // expected_output.trim(),
-                        //         actual_output.trim()
-                        //     )
-                        // };
-
-                        // We continue to use success() here for both Accepted and Wrong Answer,
-                        // formatting the stdout payload with the diff.
-                        ResponsePayload::success(Some("done".to_string()), testcases_len)
+                        // SUCCESS path: use validate_test_cases with fd3 output
+                        validate_test_cases(
+                            fd3_lines,
+                            &payload.testcases,
+                            &payload.tasktype,
+                            user_stdout.clone(),
+                        )
                     }
                 }
                 Err(e) => {
-                    println!("Sandbox engine failed fundamentally: {:?}", e);
+                    error!("Sandbox engine failed for {}: {:?}", submission_id, e);
                     ResponsePayload::error()
                 }
             };
 
+            // Push final result to Redis
+            if let Err(e) = push_result_to_redis(&pool, &submission_id, &response).await {
+                error!("Failed to push result to Redis for {}: {}", submission_id, e);
+            }
+
+            // Acknowledge the stream message so it won't be re-delivered
+            if let Err(e) = acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await {
+                error!("Failed to XACK stream message {} for {}: {}", stream_entry_id, submission_id, e);
+            }
+
             info!(
-                "Job {} completed with status: {:?}",
-                submission_id, response.status
+                "Job {} completed with status: {:?}, message: {:?}",
+                submission_id, response.status, response.message
             );
             drop(permit);
         });
@@ -536,6 +580,19 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
         .expect("Failed to create dev/shm dir");
 
     // 3. Setup Cgroups v2
+    // CRITICAL: Enable controllers in parent cgroup's subtree_control
+    // Without this, child cgroups cannot enforce memory/cpu/pids limits.
+    
+    // Log current state for diagnostics
+    let current_subtree = fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
+        .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
+    println!("[cgroup] Current subtree_control: {}", current_subtree.trim());
+    
+    match fs::write("/sys/fs/cgroup/cgroup.subtree_control", "+memory +cpu +pids") {
+        Ok(_) => println!("[cgroup] subtree_control delegation: OK"),
+        Err(e) => println!("[cgroup] subtree_control delegation FAILED: {} (limits may not work!)", e),
+    }
+
     let cgroup_path = format!("/sys/fs/cgroup/dsa_{}", sandbox_config.submissionid);
     fs::create_dir_all(&cgroup_path).map_err(|e| format!("Cgroup error: {}", e))?;
 
@@ -544,6 +601,16 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     let _ = fs::write(format!("{}/memory.swap.max", cgroup_path), "0");
     fs::write(format!("{}/cpu.max", cgroup_path), "100000 100000").unwrap();
     fs::write(format!("{}/pids.max", cgroup_path), "512").unwrap();
+    
+    // Verify memory.max was actually set
+    let actual_mem = fs::read_to_string(format!("{}/memory.max", cgroup_path))
+        .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
+    println!("[cgroup] memory.max set to: {} (requested: {})", actual_mem.trim(), mem_bytes);
+    
+    // Check which controllers are active in the child cgroup
+    let child_controllers = fs::read_to_string(format!("{}/cgroup.controllers", cgroup_path))
+        .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
+    println!("[cgroup] Child cgroup controllers: {}", child_controllers.trim());
 
     // 4. Pre-calculate CStrings for pure Async-Signal-Safety
     // THE FIX: We split Read-Only system directories and Writable Device files into two separate lists.

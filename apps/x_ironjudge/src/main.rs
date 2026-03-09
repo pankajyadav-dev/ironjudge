@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
                     continue;
                 }
                 let stream_payload = process_redis_stream(entries);
-                execute_submissions_detached(stream_payload, limiter.clone()).await;
+                execute_submissions_detached(stream_payload, limiter.clone(), shared_redis_pool.clone(), config.stream_key.clone(), config.group_name.clone()).await;
             }
             Err(e) => {
                 warn!("Failed to read from stream: {}. Retrying...", e);

@@ -855,6 +855,7 @@ dependencies = [
  "nix",
  "redis_lib",
  "seccompiler",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
