@@ -1,14 +1,17 @@
-FROM rust:latest AS builder
+FROM rust:1.85-slim AS builder
 WORKDIR /app
 COPY . .
-RUN cargo build 
-
-FROM debian:latest AS runner
+RUN cargo build --release -p x_ironjudge
+FROM debian:bookworm-slim AS runner
 WORKDIR /app
+
 RUN apt-get update && \
-    apt-get install -y ca-certificates curl unzip default-jdk g++ rustc python3 && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates curl unzip default-jdk g++ rustc python3 && \
     rm -rf /var/lib/apt/lists/*
+
 RUN curl -fsSL https://bun.sh/install | bash
+
 RUN mkdir -p /app/sandbox_bin && \
     ln -s /usr/bin/java /app/sandbox_bin/java && \
     ln -s /usr/bin/javac /app/sandbox_bin/javac && \
@@ -23,12 +26,11 @@ ARG STREAMNAME
 ARG GROUPNAME
 ARG CONSUMERNAME
 ARG REDISPAYLOADLEN
+ENV REDISURL=$REDISURL \
+    STREAMNAME=$STREAMNAME \
+    GROUPNAME=$GROUPNAME \
+    CONSUMERNAME=$CONSUMERNAME \
+    REDISPAYLOADLEN=$REDISPAYLOADLEN
 
-ENV REDISURL=$REDISURL
-ENV STREAMNAME=$STREAMNAME
-ENV GROUPNAME=$GROUPNAME
-ENV CONSUMERNAME=$CONSUMERNAME
-ENV REDISPAYLOADLEN=$REDISPAYLOADLEN
-
-COPY --from=builder /app/target/debug/x_ironjudge /app/x_ironjudge
+COPY --from=builder /app/target/release/x_ironjudge /app/x_ironjudge
 CMD ["./x_ironjudge"]
