@@ -18,7 +18,6 @@ use types_lib::{
     FailedTestDetail, LanguageConfig, ResponsePayload, SandboxConfiguration, SandboxError,
     SandboxResult, TaskPayload, TaskType, TestCaseResult, TestCaseType,
 };
-// use redis_lib::redis_connection_pooler;
 
 pub fn get_heavy_tasks_threads() -> usize {
     let total_cores = available_parallelism().map(|n| n.get()).unwrap_or(4);
