@@ -1,6 +1,8 @@
 use anyhow::Error;
 use nix::sched::{CloneFlags, unshare};
-use redis_lib::{acknowledge_stream_message, push_result_to_redis, set_processing_status, RedisPool};
+use redis_lib::{
+    RedisPool, acknowledge_stream_message, push_result_to_redis, set_processing_status,
+};
 use seccompiler::{BpfProgram, SeccompAction, SeccompFilter};
 use std::convert::TryInto;
 use std::ffi::CString;
@@ -47,7 +49,6 @@ pub fn testcase_parsing(payload: Vec<TestCaseType>) -> (String, Vec<String>) {
     }
     (input_data, expected_output_data)
 }
-
 
 pub fn validate_test_cases(
     fd3_output: Vec<String>,
@@ -96,11 +97,8 @@ pub fn validate_test_cases(
                     let mut line_cursor = 0;
                     let mut failed_tc = &testcases[0];
                     for tc in testcases {
-                        let tc_line_count = tc
-                            .output
-                            .lines()
-                            .filter(|l| !l.trim().is_empty())
-                            .count();
+                        let tc_line_count =
+                            tc.output.lines().filter(|l| !l.trim().is_empty()).count();
                         if i < line_cursor + tc_line_count {
                             failed_tc = tc;
                             break;
@@ -126,7 +124,6 @@ pub fn validate_test_cases(
         }
     }
 }
-
 
 pub fn build_strict_seccomp_profile() -> Vec<libc::sock_filter> {
     let mut rules = std::collections::BTreeMap::new();
@@ -313,16 +310,23 @@ pub async fn execute_submissions_detached(
         tokio::spawn(async move {
             // Set processing status in Redis
             if let Err(e) = set_processing_status(&pool, &submission_id).await {
-                error!("Failed to set processing status for {}: {}", submission_id, e);
+                error!(
+                    "Failed to set processing status for {}: {}",
+                    submission_id, e
+                );
             }
 
             let temp_dir = match create_temp_file(&submission_id).await {
                 Ok(dir) => dir,
                 Err(e) => {
-                    error!("Failed to create temp directory for {}: {}", submission_id, e);
+                    error!(
+                        "Failed to create temp directory for {}: {}",
+                        submission_id, e
+                    );
                     let resp = ResponsePayload::error();
                     let _ = push_result_to_redis(&pool, &submission_id, &resp).await;
-                    let _ = acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await;
+                    let _ =
+                        acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await;
                     return;
                 }
             };
@@ -349,15 +353,26 @@ pub async fn execute_submissions_detached(
                             info!("Compilation failed for {}: {}", submission_id, stderr);
                             let resp = ResponsePayload::compiler_error(Some(stderr));
                             let _ = push_result_to_redis(&pool, &submission_id, &resp).await;
-                            let _ = acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await;
+                            let _ = acknowledge_stream_message(
+                                &pool,
+                                &s_key,
+                                &g_name,
+                                &stream_entry_id,
+                            )
+                            .await;
                             drop(permit);
                             return;
                         }
                     }
                     Err(e) => {
-                        let resp = ResponsePayload::compiler_error(Some(format!("Compiler not found: {}", e)));
+                        let resp = ResponsePayload::compiler_error(Some(format!(
+                            "Compiler not found: {}",
+                            e
+                        )));
                         let _ = push_result_to_redis(&pool, &submission_id, &resp).await;
-                        let _ = acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await;
+                        let _ =
+                            acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id)
+                                .await;
                         drop(permit);
                         return;
                     }
@@ -499,8 +514,7 @@ pub async fn execute_submissions_detached(
                             }
                         }
                     } else if result.exit_code != 0 {
-                        let error_msg =
-                            format!("Runtime Error (Exit Code: {})", result.exit_code);
+                        let error_msg = format!("Runtime Error (Exit Code: {})", result.exit_code);
                         let actual_error = tokio::fs::read_to_string(&error_file_path)
                             .await
                             .unwrap_or_default();
@@ -535,12 +549,20 @@ pub async fn execute_submissions_detached(
 
             // Push final result to Redis
             if let Err(e) = push_result_to_redis(&pool, &submission_id, &response).await {
-                error!("Failed to push result to Redis for {}: {}", submission_id, e);
+                error!(
+                    "Failed to push result to Redis for {}: {}",
+                    submission_id, e
+                );
             }
 
             // Acknowledge the stream message so it won't be re-delivered
-            if let Err(e) = acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await {
-                error!("Failed to XACK stream message {} for {}: {}", stream_entry_id, submission_id, e);
+            if let Err(e) =
+                acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await
+            {
+                error!(
+                    "Failed to XACK stream message {} for {}: {}",
+                    stream_entry_id, submission_id, e
+                );
             }
 
             info!(
@@ -555,6 +577,23 @@ pub async fn execute_submissions_detached(
 // --- CORE SANDBOX ENGINE ---
 pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxResult, SandboxError> {
     let start_time = Instant::now();
+    unsafe {
+        let cgroup_fs_name = std::ffi::CString::new("cgroup2").unwrap();
+        let cgroup_mnt_target = std::ffi::CString::new("/sys/fs/cgroup").unwrap();
+
+        if libc::mount(
+            cgroup_fs_name.as_ptr(),
+            cgroup_mnt_target.as_ptr(),
+            cgroup_fs_name.as_ptr(),
+            0,
+            std::ptr::null(),
+        ) != 0
+        {
+            println!(
+                "[cgroup] Warning: Failed to mount fresh cgroup2 fs. It might already be writable."
+            );
+        }
+    }
 
     let in_file = sandbox_config.input_file;
     let out_file = sandbox_config.output_file;
@@ -580,15 +619,24 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     // 3. Setup Cgroups v2
     // CRITICAL: Enable controllers in parent cgroup's subtree_control
     // Without this, child cgroups cannot enforce memory/cpu/pids limits.
-    
+
     // Log current state for diagnostics
     let current_subtree = fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
         .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
-    println!("[cgroup] Current subtree_control: {}", current_subtree.trim());
-    
-    match fs::write("/sys/fs/cgroup/cgroup.subtree_control", "+memory +cpu +pids") {
+    println!(
+        "[cgroup] Current subtree_control: {}",
+        current_subtree.trim()
+    );
+
+    match fs::write(
+        "/sys/fs/cgroup/cgroup.subtree_control",
+        "+memory +cpu +pids",
+    ) {
         Ok(_) => println!("[cgroup] subtree_control delegation: OK"),
-        Err(e) => println!("[cgroup] subtree_control delegation FAILED: {} (limits may not work!)", e),
+        Err(e) => println!(
+            "[cgroup] subtree_control delegation FAILED: {} (limits may not work!)",
+            e
+        ),
     }
 
     let cgroup_path = format!("/sys/fs/cgroup/dsa_{}", sandbox_config.submissionid);
@@ -599,16 +647,23 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     let _ = fs::write(format!("{}/memory.swap.max", cgroup_path), "0");
     fs::write(format!("{}/cpu.max", cgroup_path), "100000 100000").unwrap();
     fs::write(format!("{}/pids.max", cgroup_path), "512").unwrap();
-    
+
     // Verify memory.max was actually set
     let actual_mem = fs::read_to_string(format!("{}/memory.max", cgroup_path))
         .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
-    println!("[cgroup] memory.max set to: {} (requested: {})", actual_mem.trim(), mem_bytes);
-    
+    println!(
+        "[cgroup] memory.max set to: {} (requested: {})",
+        actual_mem.trim(),
+        mem_bytes
+    );
+
     // Check which controllers are active in the child cgroup
     let child_controllers = fs::read_to_string(format!("{}/cgroup.controllers", cgroup_path))
         .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
-    println!("[cgroup] Child cgroup controllers: {}", child_controllers.trim());
+    println!(
+        "[cgroup] Child cgroup controllers: {}",
+        child_controllers.trim()
+    );
 
     // 4. Pre-calculate CStrings for pure Async-Signal-Safety
     // THE FIX: We split Read-Only system directories and Writable Device files into two separate lists.
