@@ -81,7 +81,6 @@ pub struct TestCaseResult {
     pub result: String,
 }
 
-/// For Test task type: details of the first failed test case
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct FailedTestDetail {
     pub id: i32,
