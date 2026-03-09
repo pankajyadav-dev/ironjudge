@@ -609,39 +609,51 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     let _ = fs::set_permissions(&sandbox_config.root_dir, perms);
 
     // 2. Prepare strict directory layout
-    let old_root = sandbox_config.root_dir.join("oldroot");
-    fs::create_dir_all(&old_root).expect("Failed to create oldroot dir");
-    fs::create_dir_all(sandbox_config.root_dir.join("proc")).expect("Failed to create proc dir");
-    fs::create_dir_all(sandbox_config.root_dir.join("tmp")).expect("Failed to create tmp dir");
-    fs::create_dir_all(sandbox_config.root_dir.join("dev/shm"))
-        .expect("Failed to create dev/shm dir");
-
-    // 3. Setup Cgroups v2
-    // CRITICAL: Enable controllers in parent cgroup's subtree_control
-    // Without this, child cgroups cannot enforce memory/cpu/pids limits.
-
-    // Log current state for diagnostics
-    let current_subtree = fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
-        .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
-    println!(
-        "[cgroup] Current subtree_control: {}",
-        current_subtree.trim()
-    );
-
-    match fs::write(
-        "/sys/fs/cgroup/cgroup.subtree_control",
-        "+memory +cpu +pids",
-    ) {
-        Ok(_) => println!("[cgroup] subtree_control delegation: OK"),
-        Err(e) => println!(
-            "[cgroup] subtree_control delegation FAILED: {} (limits may not work!)",
-            e
-        ),
-    }
-
-    let cgroup_path = format!("/sys/fs/cgroup/dsa_{}", sandbox_config.submissionid);
-    fs::create_dir_all(&cgroup_path).map_err(|e| format!("Cgroup error: {}", e))?;
-
+        let old_root = sandbox_config.root_dir.join("oldroot");
+        fs::create_dir_all(&old_root).expect("Failed to create oldroot dir");
+        fs::create_dir_all(sandbox_config.root_dir.join("proc")).expect("Failed to create proc dir");
+        fs::create_dir_all(sandbox_config.root_dir.join("tmp")).expect("Failed to create tmp dir");
+        fs::create_dir_all(sandbox_config.root_dir.join("dev/shm"))
+            .expect("Failed to create dev/shm dir");
+    
+        // 3. Setup Cgroups v2
+        // CRITICAL: Enable controllers in parent cgroup's subtree_control
+        // Without this, child cgroups cannot enforce memory/cpu/pids limits.
+    
+        // --- THE FIX: Satisfy cgroup v2 "No Internal Processes" rule ---
+        // Move the main ironjudge process into an "init" subdirectory 
+        // so the root cgroup is empty and allowed to delegate controllers.
+        let init_cgroup = "/sys/fs/cgroup/init";
+        fs::create_dir_all(init_cgroup).unwrap_or_default();
+        
+        let my_pid = std::process::id();
+        if let Err(e) = fs::write(format!("{}/cgroup.procs", init_cgroup), my_pid.to_string()) {
+            println!("[cgroup] Warning: failed to move executor to init cgroup: {}", e);
+        }
+        // ---------------------------------------------------------------
+    
+        // Log current state for diagnostics
+        let current_subtree = fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
+            .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
+        println!(
+            "[cgroup] Current subtree_control: {}",
+            current_subtree.trim()
+        );
+    
+        match fs::write(
+            "/sys/fs/cgroup/cgroup.subtree_control",
+            "+memory +cpu +pids",
+        ) {
+            Ok(_) => println!("[cgroup] subtree_control delegation: OK"),
+            Err(e) => println!(
+                "[cgroup] subtree_control delegation FAILED: {} (limits may not work!)",
+                e
+            ),
+        }
+    
+        let cgroup_path = format!("/sys/fs/cgroup/dsa_{}", sandbox_config.submissionid);
+        fs::create_dir_all(&cgroup_path).map_err(|e| format!("Cgroup error: {}", e))?;
+    
     let mem_bytes = sandbox_config.memory_limit as u64 * 1024 * 1024;
     fs::write(format!("{}/memory.max", cgroup_path), mem_bytes.to_string()).unwrap();
     let _ = fs::write(format!("{}/memory.swap.max", cgroup_path), "0");
