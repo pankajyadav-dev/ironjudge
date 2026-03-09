@@ -17,6 +17,7 @@ use types_lib::{
     LanguageConfig, ResponsePayload, SandboxConfiguration, SandboxError, SandboxResult,
     TaskPayload, TestCaseType,
 };
+// use redis_lib::redis_connection_pooler;
 
 pub fn get_heavy_tasks_threads() -> usize {
     let total_cores = available_parallelism().map(|n| n.get()).unwrap_or(4);
@@ -37,6 +38,7 @@ pub fn testcase_parsing(payload: Vec<TestCaseType>) -> (String, String) {
         if !input_data.ends_with('\n') {
             input_data.push('\n');
         }
+        expected_output_data.push_str(&tc.output);
         if !expected_output_data.ends_with('\n') {
             expected_output_data.push('\n');
         }
@@ -44,11 +46,9 @@ pub fn testcase_parsing(payload: Vec<TestCaseType>) -> (String, String) {
     (input_data, expected_output_data)
 }
 
-// --- SECCOMP BPF FIREWALL COMPILER ---
 pub fn build_strict_seccomp_profile() -> Vec<libc::sock_filter> {
     let mut rules = std::collections::BTreeMap::new();
 
-    // (Keep your existing allowed_syscalls list here...)
     let allowed_syscalls = vec![
         // Memory Management
         libc::SYS_mmap,
@@ -346,7 +346,31 @@ pub async fn execute_submissions_detached(
                             println!("Sandbox stdout:\n{}", actual_output);
                         }
 
-                        ResponsePayload::success(Some(error_msg), 0)
+                        // Map specific signals to the new ResponsePayload methods
+                        match signal {
+                            24 => ResponsePayload::time_error(0),
+                            9 => {
+                                if result.wall_time_ms >= payload.timelimit as u128 {
+                                    ResponsePayload::time_error(0)
+                                } else {
+                                    ResponsePayload::memory_error(0)
+                                }
+                            }
+                            _ => {
+                                // Combine the signal message and actual stderr for runtime errors
+                                let full_err_msg = if actual_error.is_empty() {
+                                    error_msg
+                                } else {
+                                    format!("{}\n{}", error_msg, actual_error)
+                                };
+                                ResponsePayload::runtime_error(
+                                    Some(full_err_msg),
+                                    0,
+                                    Some(actual_output),
+                                    None,
+                                )
+                            }
+                        }
                     } else if result.exit_code != 0 {
                         let error_msg = format!("Runtime Error (Exit Code: {})", result.exit_code);
                         println!("\n=== {} [{}] ===", error_msg, submission_id);
@@ -365,7 +389,18 @@ pub async fn execute_submissions_detached(
                             println!("Sandbox stdout:\n{}", actual_output);
                         }
 
-                        ResponsePayload::success(Some(error_msg), 0)
+                        let full_err_msg = if actual_error.is_empty() {
+                            error_msg
+                        } else {
+                            format!("{}\n{}", error_msg, actual_error)
+                        };
+
+                        ResponsePayload::runtime_error(
+                            Some(full_err_msg),
+                            0,
+                            Some(actual_output),
+                            None,
+                        )
                     } else {
                         let actual_output = tokio::fs::read_to_string(&user_output_file_path)
                             .await
@@ -400,6 +435,9 @@ pub async fn execute_submissions_detached(
                                 actual_output.trim()
                             )
                         };
+
+                        // We continue to use success() here for both Accepted and Wrong Answer,
+                        // formatting the stdout payload with the diff.
                         ResponsePayload::success(Some(msg), testcases_len)
                     }
                 }
@@ -408,6 +446,7 @@ pub async fn execute_submissions_detached(
                     ResponsePayload::error()
                 }
             };
+
             info!(
                 "Job {} completed with status: {:?}",
                 submission_id, response.status

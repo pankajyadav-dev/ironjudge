@@ -853,6 +853,7 @@ dependencies = [
  "anyhow",
  "libc",
  "nix",
+ "redis_lib",
  "seccompiler",
  "tempfile",
  "tokio",
