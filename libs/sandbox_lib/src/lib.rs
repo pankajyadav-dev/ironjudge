@@ -14,8 +14,7 @@ use tempfile::{Builder, TempDir};
 use tokio::sync::Semaphore;
 use tracing::info;
 use types_lib::{
-    LanguageConfig, ResponsePayload, SandboxConfiguration, SandboxError, SandboxResult,
-    TaskPayload, TestCaseType,
+    LanguageConfig, ResponsePayload, SandboxConfiguration, SandboxError, SandboxResult, TaskPayload, TaskType, TestCaseType,StatusType,MessageType
 };
 // use redis_lib::redis_connection_pooler;
 
@@ -29,22 +28,60 @@ pub async fn create_temp_file(directory: &str) -> Result<TempDir, Error> {
     Ok(ram_dir)
 }
 
-pub fn testcase_parsing(payload: Vec<TestCaseType>) -> (String, String) {
+pub fn testcase_parsing(payload: Vec<TestCaseType>) -> (String, Vec<String>) {
     let mut input_data = format!("{}\n", payload.len());
-    let mut expected_output_data = String::new();
+    let mut expected_output_data = Vec::new();
 
     for tc in &payload {
         input_data.push_str(&tc.input);
         if !input_data.ends_with('\n') {
             input_data.push('\n');
         }
-        expected_output_data.push_str(&tc.output);
-        if !expected_output_data.ends_with('\n') {
-            expected_output_data.push('\n');
+        for line in tc.output.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                expected_output_data.push(trimmed.to_string());
+            }
         }
     }
     (input_data, expected_output_data)
 }
+
+
+pub fn validate_test_cases(code_output:Vec<String>,expected_output:Vec<String>,tasktype: TaskType)-> ResponsePayload{
+    match tasktype{
+        TaskType::Run=>{
+            ResponsePayload {
+                status: StatusType::Completed,
+                message: MessageType::Testcasefailed,
+                error: None,
+                ttpassed: code_output.len() as u32,
+                stdout: None,
+                failedcase: None,
+            }
+        }
+        TaskType::Test=>{
+            let mut failed = false;
+            let mut failed_case = None;
+            for (i, (co, eo)) in code_output.iter().zip(expected_output.iter()).enumerate() {
+                if co != eo {
+                    failed = true;
+                    failed_case = Some(i.to_string());
+                    break;
+                }
+            }
+            ResponsePayload {
+                status: if failed { StatusType::Error } else { StatusType::Completed },
+                message: if failed { MessageType::Error } else { MessageType::Error },
+                error: None,
+                ttpassed: code_output.len() as u32,
+                stdout: None,
+                failedcase: failed_case,
+            }
+        }
+    }
+}
+
 
 pub fn build_strict_seccomp_profile() -> Vec<libc::sock_filter> {
     let mut rules = std::collections::BTreeMap::new();
@@ -261,7 +298,12 @@ pub async fn execute_submissions_detached(
             let output_file_path = root_dir_path.join("output.txt");
             let user_output_file_path = root_dir_path.join("user_output.txt");
             let error_file_path = root_dir_path.join("error.txt");
-
+            
+            for (i, line) in expected_output.iter().enumerate() {
+                println!("Expected output for testcase {}: {}", i + 1, line);
+            }
+            
+            
             tokio::fs::write(&input_file_path, input_data)
                 .await
                 .unwrap();
@@ -310,7 +352,19 @@ pub async fn execute_submissions_detached(
             })
             .await
             .expect("Blocking task panicked");
-
+            
+            //test output vector
+            let output_string = tokio::fs::read_to_string(&output_file_path).await.unwrap_or_default();
+            let output_lines: Vec<String> = output_string.lines().map(|l| l.trim().to_string()).filter(|line| !line.is_empty()).collect();
+            println!("the output line {:?}",output_lines);
+            
+            for (i, line) in output_lines.iter().enumerate() {
+                println!("Output for testcase {}: {}", i + 1, line);
+            }
+            
+            println!("the output is mathced {:?}", output_lines==expected_output);
+            
+            
             let response = match sandbox_result {
                 Ok(result) => {
                     if let Some(signal) = result.signal {
@@ -425,20 +479,20 @@ pub async fn execute_submissions_detached(
                             println!("========================\n");
                         }
 
-                        let is_match = actual_output.trim() == expected_output.trim();
-                        let msg = if is_match {
-                            "Accepted: Output matched!".to_string()
-                        } else {
-                            format!(
-                                "Wrong Answer.\nExpected:\n{}\nGot:\n{}",
-                                expected_output.trim(),
-                                actual_output.trim()
-                            )
-                        };
+                        // let is_match = actual_output.trim() == expected_output.trim();
+                        // let msg = if is_match {
+                        //     "Accepted: Output matched!".to_string()
+                        // } else {
+                        //     format!(
+                        //         "Wrong Answer.\nExpected:\n{}\nGot:\n{}",
+                        //         // expected_output.trim(),
+                        //         actual_output.trim()
+                        //     )
+                        // };
 
                         // We continue to use success() here for both Accepted and Wrong Answer,
                         // formatting the stdout payload with the diff.
-                        ResponsePayload::success(Some(msg), testcases_len)
+                        ResponsePayload::success(Some("done".to_string()), testcases_len)
                     }
                 }
                 Err(e) => {

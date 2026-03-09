@@ -106,6 +106,16 @@ impl ResponsePayload {
             failedcase: None,
         }
     }
+    pub fn test_failed() -> Self {
+        Self {
+            status: StatusType::Completed,
+            message: MessageType::Testcasefailed,
+            error: None,
+            ttpassed: 0,
+            stdout: None,
+            failedcase: None,
+        }
+    }
     pub fn error() -> Self {
         Self {
             status: StatusType::Error,
@@ -202,6 +212,7 @@ pub enum StatusType {
 pub enum MessageType {
     Processing,
     Success,
+    Testcasefailed,
     CompileTimeError,
     RunTimeError,
     MemoryLimitError,
