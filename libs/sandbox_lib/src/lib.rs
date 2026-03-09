@@ -57,7 +57,6 @@ pub fn validate_test_cases(
 ) -> ResponsePayload {
     match tasktype {
         TaskType::Run => {
-            // Build enriched test case results from fd3 output
             let results: Vec<TestCaseResult> = testcases
                 .iter()
                 .enumerate()
