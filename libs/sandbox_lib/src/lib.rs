@@ -580,7 +580,7 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
             std::ptr::null(),
         ) != 0
         {
-            println!(
+            error!(
                 "[cgroup] Warning: Failed to mount fresh cgroup2 fs. It might already be writable."
             );
         }
@@ -610,22 +610,18 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     
     let my_pid = std::process::id();
     if let Err(e) = fs::write(format!("{}/cgroup.procs", init_cgroup), my_pid.to_string()) {
-        println!("[cgroup] Warning: failed to move executor to init cgroup: {}", e);
+        error!("[cgroup] Warning: failed to move executor to init cgroup: {}", e);
     }
     
-    let current_subtree = fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
+    let _ = fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
         .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
-    println!(
-        "[cgroup] Current subtree_control: {}",
-        current_subtree.trim()
-    );
     
     match fs::write(
         "/sys/fs/cgroup/cgroup.subtree_control",
         "+memory +cpu +pids",
     ) {
-        Ok(_) => println!("[cgroup] subtree_control delegation: OK"),
-        Err(e) => println!(
+        Ok(_) => info!("[cgroup] subtree_control delegation: OK"),
+        Err(e) => error!(
             "[cgroup] subtree_control delegation FAILED: {} (limits may not work!)",
             e
         ),
@@ -640,20 +636,11 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     fs::write(format!("{}/cpu.max", cgroup_path), "100000 100000").unwrap();
     fs::write(format!("{}/pids.max", cgroup_path), "512").unwrap();
 
-    let actual_mem = fs::read_to_string(format!("{}/memory.max", cgroup_path))
+    let _ = fs::read_to_string(format!("{}/memory.max", cgroup_path))
         .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
-    println!(
-        "[cgroup] memory.max set to: {} (requested: {})",
-        actual_mem.trim(),
-        mem_bytes
-    );
 
-    let child_controllers = fs::read_to_string(format!("{}/cgroup.controllers", cgroup_path))
+    let _child_controllers = fs::read_to_string(format!("{}/cgroup.controllers", cgroup_path))
         .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
-    println!(
-        "[cgroup] Child cgroup controllers: {}",
-        child_controllers.trim()
-    );
 
     let readonly_dirs = [
         "/bin",
@@ -994,16 +981,15 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     }
 
     if let Err(e) = fs::remove_dir(&cgroup_path) {
-        println!("warning failed to remove cgroups {} : {}", cgroup_path, e);
+        error!("warning failed to remove cgroups {} : {}", cgroup_path, e);
     };
 
     let result = SandboxResult {
         exit_code: status.code().unwrap_or(-1),
         signal: status.signal(),
         wall_time_ms: start_time.elapsed().as_millis(),
-        is_oom, // --- NEW: Add the OOM telemetry to the returned result ---
+        is_oom, 
     };
 
-    println!("sandbox result {:?}", result);
     Ok(result)
 }
