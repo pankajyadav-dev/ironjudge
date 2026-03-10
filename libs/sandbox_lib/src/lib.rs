@@ -568,23 +568,6 @@ pub async fn execute_submissions_detached(
 // --- CORE SANDBOX ENGINE ---
 pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxResult, SandboxError> {
     let start_time = Instant::now();
-    unsafe {
-        let cgroup_fs_name = std::ffi::CString::new("cgroup2").unwrap();
-        let cgroup_mnt_target = std::ffi::CString::new("/sys/fs/cgroup").unwrap();
-
-        if libc::mount(
-            cgroup_fs_name.as_ptr(),
-            cgroup_mnt_target.as_ptr(),
-            cgroup_fs_name.as_ptr(),
-            0,
-            std::ptr::null(),
-        ) != 0
-        {
-            error!(
-                "[cgroup] Warning: Failed to mount fresh cgroup2 fs. It might already be writable."
-            );
-        }
-    }
 
     let in_file = sandbox_config.input_file;
     let out_file = sandbox_config.output_file;
