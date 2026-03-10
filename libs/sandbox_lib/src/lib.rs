@@ -467,7 +467,7 @@ pub async fn execute_submissions_detached(
                     // --- THE FIX: Cgroup Telemetry priority check ---
                     if result.is_oom {
                         ResponsePayload::memory_error(0, user_stdout.clone())
-                    } 
+                    }
                     // ------------------------------------------------
                     else if let Some(signal) = effective_signal {
                         let error_msg = match signal {
@@ -513,6 +513,7 @@ pub async fn execute_submissions_detached(
                         }
                     } else if result.exit_code != 0 {
                         let error_msg = format!("Runtime Error (Exit Code: {})", result.exit_code);
+                        info!("DEBUG: Sandbox exited with code {}. Stderr: {}", result.exit_code, actual_error);
                         let full_err_msg = if actual_error.is_empty() {
                             error_msg
                         } else {
@@ -587,18 +588,21 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     fs::create_dir_all(sandbox_config.root_dir.join("tmp")).expect("Failed to create tmp dir");
     fs::create_dir_all(sandbox_config.root_dir.join("dev/shm"))
         .expect("Failed to create dev/shm dir");
-    
+
     let init_cgroup = "/sys/fs/cgroup/init";
     fs::create_dir_all(init_cgroup).unwrap_or_default();
-    
+
     let my_pid = std::process::id();
     if let Err(e) = fs::write(format!("{}/cgroup.procs", init_cgroup), my_pid.to_string()) {
-        error!("[cgroup] Warning: failed to move executor to init cgroup: {}", e);
+        error!(
+            "[cgroup] Warning: failed to move executor to init cgroup: {}",
+            e
+        );
     }
-    
+
     let _ = fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
         .unwrap_or_else(|e| format!("READ_ERROR: {}", e));
-    
+
     match fs::write(
         "/sys/fs/cgroup/cgroup.subtree_control",
         "+memory +cpu +pids",
@@ -609,10 +613,10 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
             e
         ),
     }
-    
+
     let cgroup_path = format!("/sys/fs/cgroup/dsa_{}", sandbox_config.submissionid);
     fs::create_dir_all(&cgroup_path).map_err(|e| format!("Cgroup error: {}", e))?;
-    
+
     let mem_bytes = sandbox_config.memory_limit as u64 * 1024 * 1024;
     fs::write(format!("{}/memory.max", cgroup_path), mem_bytes.to_string()).unwrap();
     let _ = fs::write(format!("{}/memory.swap.max", cgroup_path), "0");
@@ -929,7 +933,7 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     // --- THE FIX: Parse cgroups memory events before deleting the directory ---
     let events_path = format!("{}/memory.events", cgroup_path);
     let events_data = fs::read_to_string(&events_path).unwrap_or_default();
-    
+
     let mut is_oom = false;
     for line in events_data.lines() {
         if line.starts_with("oom_kill ") || line.starts_with("oom ") {
@@ -963,15 +967,27 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    if let Err(e) = fs::remove_dir(&cgroup_path) {
-        error!("warning failed to remove cgroups {} : {}", cgroup_path, e);
-    };
+    let mut retries = 10;
+    while retries > 0 {
+        if fs::remove_dir(&cgroup_path).is_ok() {
+            break; // Successfully deleted!
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        retries -= 1;
+    }
+
+    if retries == 0 {
+        error!(
+            "Warning: permanently failed to remove cgroup {}",
+            cgroup_path
+        );
+    }
 
     let result = SandboxResult {
         exit_code: status.code().unwrap_or(-1),
         signal: status.signal(),
         wall_time_ms: start_time.elapsed().as_millis(),
-        is_oom, 
+        is_oom,
     };
 
     Ok(result)
