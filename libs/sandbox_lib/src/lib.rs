@@ -513,7 +513,6 @@ pub async fn execute_submissions_detached(
                         }
                     } else if result.exit_code != 0 {
                         let error_msg = format!("Runtime Error (Exit Code: {})", result.exit_code);
-                        info!("DEBUG: Sandbox exited with code {}. Stderr: {}", result.exit_code, actual_error);
                         let full_err_msg = if actual_error.is_empty() {
                             error_msg
                         } else {
@@ -566,9 +565,55 @@ pub async fn execute_submissions_detached(
     }
 }
 
+use std::sync::Once;
+
+static CGROUP_INIT: Once = Once::new();
+
+pub fn initialize_global_cgroups_once() {
+    CGROUP_INIT.call_once(|| {
+        info!("[cgroup] Performing one-time global cgroup initialization...");
+
+        unsafe {
+            let cgroup_fs_name = std::ffi::CString::new("cgroup2").unwrap();
+            let cgroup_mnt_target = std::ffi::CString::new("/sys/fs/cgroup").unwrap();
+
+            // Only attempt the mount once. If it fails, the host/Docker likely already mounted it.
+            if libc::mount(
+                cgroup_fs_name.as_ptr(),
+                cgroup_mnt_target.as_ptr(),
+                cgroup_fs_name.as_ptr(),
+                0,
+                std::ptr::null(),
+            ) != 0
+            {
+                info!("[cgroup] cgroup2 fs already mounted or mount failed (normal in Docker).");
+            }
+        }
+
+        let init_cgroup = "/sys/fs/cgroup/init";
+        fs::create_dir_all(init_cgroup).unwrap_or_default();
+
+        let my_pid = std::process::id();
+        if let Err(e) = fs::write(format!("{}/cgroup.procs", init_cgroup), my_pid.to_string()) {
+            error!(
+                "[cgroup] Warning: failed to move executor to init cgroup: {}",
+                e
+            );
+        }
+
+        match fs::write(
+            "/sys/fs/cgroup/cgroup.subtree_control",
+            "+memory +cpu +pids",
+        ) {
+            Ok(_) => info!("[cgroup] Global subtree_control delegation: OK"),
+            Err(e) => error!("[cgroup] Global subtree_control delegation FAILED: {}", e),
+        }
+    });
+}
 // --- CORE SANDBOX ENGINE ---
 pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxResult, SandboxError> {
     let start_time = Instant::now();
+    initialize_global_cgroups_once();
 
     let in_file = sandbox_config.input_file;
     let out_file = sandbox_config.output_file;
@@ -967,21 +1012,9 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    let mut retries = 10;
-    while retries > 0 {
-        if fs::remove_dir(&cgroup_path).is_ok() {
-            break; // Successfully deleted!
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        retries -= 1;
-    }
-
-    if retries == 0 {
-        error!(
-            "Warning: permanently failed to remove cgroup {}",
-            cgroup_path
-        );
-    }
+    if let Err(e) = fs::remove_dir(&cgroup_path) {
+        error!("warning failed to remove cgroups {} : {}", cgroup_path, e);
+    };
 
     let result = SandboxResult {
         exit_code: status.code().unwrap_or(-1),
