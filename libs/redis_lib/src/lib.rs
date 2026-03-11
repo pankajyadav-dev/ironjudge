@@ -98,10 +98,7 @@ pub async fn set_processing_status(
     let key = format!("status:{}", submission_id);
     let _: () = redis::pipe()
         .atomic()
-        .hset_multiple(
-            &key,
-            &[("status", "processing"), ("message", "processing")],
-        )
+        .hset_multiple(&key, &[("status", "processing"), ("message", "processing")])
         .expire(&key, STATUS_TTL_SECS)
         .query_async(&mut *conn)
         .await?;
@@ -169,12 +166,16 @@ pub async fn acknowledge_stream_message(
     stream_entry_id: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut conn = pool.get().await?;
-    let _: () = redis::cmd("XACK")
+
+    let mut redis_pipe = redis::pipe();
+    redis_pipe
+        .cmd("XACK")
         .arg(stream_key)
         .arg(group_name)
-        .arg(stream_entry_id)
-        .query_async(&mut *conn)
-        .await?;
+        .arg(stream_entry_id);
+    redis_pipe.cmd("XDEL").arg(stream_key).arg(stream_entry_id);
+
+    let _: () = redis_pipe.query_async(&mut *conn).await?;
     info!(stream_entry_id = %stream_entry_id, "Stream message acknowledged via XACK");
     Ok(())
 }

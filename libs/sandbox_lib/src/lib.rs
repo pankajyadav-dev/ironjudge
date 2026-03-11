@@ -157,10 +157,6 @@ pub fn build_strict_seccomp_profile() -> Vec<libc::sock_filter> {
         libc::SYS_pipe,
         libc::SYS_pipe2,
         libc::SYS_socketpair,
-        // High-Performance Async I/O (Required by Bun)
-        libc::SYS_io_uring_setup,
-        libc::SYS_io_uring_enter,
-        libc::SYS_io_uring_register,
         // File Metadata & Directory Resolution
         libc::SYS_stat,
         libc::SYS_fstat,
@@ -287,6 +283,165 @@ pub fn build_strict_seccomp_profile() -> Vec<libc::sock_filter> {
         .collect()
 }
 
+
+
+async fn process_single_submission(
+    submission_id: &str,
+    payload: &TaskPayload,
+) -> anyhow::Result<ResponsePayload> {
+    // We can now safely use `?` everywhere instead of unwrap()
+    let temp_dir = create_temp_file(submission_id).await?;
+    let root_dir_path = temp_dir.path().to_path_buf();
+    
+    let language_config = LanguageConfig::get(&payload.language);
+    let source_path = root_dir_path.join(language_config.source_filename);
+    tokio::fs::write(&source_path, &payload.code).await?;
+
+    // --- COMPILATION PHASE ---
+    if let Some((compiler, args)) = &language_config.compile_cmd {
+        let compile_result = tokio::process::Command::new(compiler)
+            .args(args)
+            .current_dir(&root_dir_path)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await?;
+
+        if !compile_result.status.success() {
+            let stderr = String::from_utf8_lossy(&compile_result.stderr).to_string();
+            info!("Compilation failed for {}: {}", submission_id, stderr);
+            // Early return Ok with the compiler error payload
+            return Ok(ResponsePayload::compiler_error(Some(stderr)));
+        }
+    }
+
+    info!("Compilation completed for {}", submission_id);
+
+    // --- SETUP SANDBOX FILES ---
+    let (input_data, _expected_output) = testcase_parsing(payload.testcases.clone());
+    let input_file_path = root_dir_path.join("input.txt");
+    let output_file_path = root_dir_path.join("output.txt");
+    let user_output_file_path = root_dir_path.join("user_output.txt");
+    let error_file_path = root_dir_path.join("error.txt");
+
+    tokio::fs::write(&input_file_path, input_data).await?;
+
+    let in_file = tokio::fs::File::open(&input_file_path).await?.into_std();
+    let out_file = tokio::fs::File::create(&output_file_path).await?.into_std();
+    let err_file = tokio::fs::File::create(&error_file_path).await?.into_std();
+    let user_output_file = tokio::fs::File::create(&user_output_file_path).await?.into_std();
+
+    let time_limit_secs = std::cmp::max(1, payload.timelimit / 1000);
+
+    let sandbox_config = SandboxConfiguration {
+        submissionid: submission_id.to_string(),
+        memory_limit: payload.memorylimit,
+        time_limit: time_limit_secs,
+        root_dir: root_dir_path.clone(),
+        input_file: in_file.await,
+        output_file: out_file.await,
+        error_output: err_file.await,
+        user_output: user_output_file.await,
+        run_cmd_exe: language_config.run_cmd.0.to_string(),
+        run_cmd_args: language_config
+            .run_cmd
+            .1
+            .iter()
+            .map(|&s| s.to_string())
+            .collect(),
+    };
+
+    let sub_id_clone = submission_id.to_string();
+    let sandbox_result = tokio::task::spawn_blocking(move || {
+        info!("Starting sandbox execution for job: {}", sub_id_clone);
+        sandbox_runner(sandbox_config)
+    })
+    .await?
+    .map_err(|e| anyhow::anyhow!("{}",e))?; 
+
+    let fd3_string = tokio::fs::read_to_string(&output_file_path).await.unwrap_or_default();
+    let fd3_lines: Vec<String> = fd3_string
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    let user_stdout_raw = tokio::fs::read_to_string(&user_output_file_path).await.unwrap_or_default();
+    let user_stdout = if user_stdout_raw.trim().is_empty() {
+        None
+    } else {
+        Some(user_stdout_raw)
+    };
+
+    let effective_signal = sandbox_result.signal.or_else(|| {
+        if sandbox_result.exit_code > 128 {
+            Some(sandbox_result.exit_code - 128)
+        } else {
+            None
+        }
+    });
+
+    let actual_error = tokio::fs::read_to_string(&error_file_path).await.unwrap_or_default();
+
+    let response = if sandbox_result.is_oom {
+        ResponsePayload::memory_error(0, user_stdout.clone())
+    } else if let Some(signal) = effective_signal {
+        let error_msg = match signal {
+            11 => "Runtime Error: Segmentation Fault (SIGSEGV)".to_string(),
+            24 => "Time Limit Exceeded (CPU Time)".to_string(),
+            9 => {
+                if sandbox_result.wall_time_ms >= payload.timelimit as u128 {
+                    "Time Limit Exceeded (Wall Time)".to_string()
+                } else {
+                    "Memory Limit Exceeded / Killed".to_string()
+                }
+            }
+            8 => "Runtime Error: Floating Point Exception".to_string(),
+            6 => "Runtime Error: Aborted (SIGABRT)".to_string(),
+            31 => "Security Violation: Unauthorized System Call Blocked (SIGSYS)".to_string(),
+            _ => format!("Runtime Error: Killed by signal {}", signal),
+        };
+
+        match signal {
+            24 => ResponsePayload::time_error(0, user_stdout.clone()),
+            9 => {
+                if sandbox_result.wall_time_ms >= payload.timelimit as u128 {
+                    ResponsePayload::time_error(0, user_stdout.clone())
+                } else {
+                    ResponsePayload::memory_error(0, user_stdout.clone())
+                }
+            }
+            _ => {
+                let full_err_msg = if actual_error.is_empty() {
+                    error_msg
+                } else {
+                    format!("{}\n{}", error_msg, actual_error)
+                };
+                ResponsePayload::runtime_error(Some(full_err_msg), 0, user_stdout.clone(), None)
+            }
+        }
+    } else if sandbox_result.exit_code != 0 {
+        let error_msg = format!("Runtime Error (Exit Code: {})", sandbox_result.exit_code);
+        let full_err_msg = if actual_error.is_empty() {
+            error_msg
+        } else {
+            format!("{}\n{}", error_msg, actual_error)
+        };
+        ResponsePayload::runtime_error(Some(full_err_msg), 0, user_stdout.clone(), None)
+    } else {
+        validate_test_cases(
+            fd3_lines,
+            &payload.testcases,
+            &payload.tasktype,
+            user_stdout.clone(),
+        )
+    };
+
+    Ok(response)
+}
+
+
+
 pub async fn execute_submissions_detached(
     tasks: Vec<(String, String, TaskPayload)>,
     concurrency_limiter: Arc<Semaphore>,
@@ -306,260 +461,33 @@ pub async fn execute_submissions_detached(
 
         tokio::spawn(async move {
             if let Err(e) = set_processing_status(&pool, &submission_id).await {
-                error!(
-                    "Failed to set processing status for {}: {}",
-                    submission_id, e
-                );
+                error!("Failed to set processing status for {}: {}", submission_id, e);
             }
 
-            let temp_dir = match create_temp_file(&submission_id).await {
-                Ok(dir) => dir,
+            // 1. Call the helper function and safely handle any internal errors
+            let response = match process_single_submission(&submission_id, &payload).await {
+                Ok(resp) => resp,
                 Err(e) => {
-                    error!(
-                        "Failed to create temp directory for {}: {}",
-                        submission_id, e
-                    );
-                    let resp = ResponsePayload::error();
-                    let _ = push_result_to_redis(&pool, &submission_id, &resp).await;
-                    let _ =
-                        acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await;
-                    return;
+                    error!("Internal Sandbox Error for {}: {}", submission_id, e);
+                    // Provide a safe fallback if anything unexpectedly failed
+                    ResponsePayload::error() 
                 }
             };
 
-            let root_dir_path = temp_dir.path().to_path_buf();
-            let language_config = LanguageConfig::get(&payload.language);
-            let source_path = root_dir_path.join(language_config.source_filename);
-            tokio::fs::write(&source_path, &payload.code).await.unwrap();
-
-            if let Some((compiler, args)) = &language_config.compile_cmd {
-                let _error_file_path = root_dir_path.join("compile_error.txt");
-                let compile_result = tokio::process::Command::new(compiler)
-                    .args(args)
-                    .current_dir(&root_dir_path)
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .output()
-                    .await;
-
-                match compile_result {
-                    Ok(output) => {
-                        if !output.status.success() {
-                            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                            info!("Compilation failed for {}: {}", submission_id, stderr);
-                            let resp = ResponsePayload::compiler_error(Some(stderr));
-                            let _ = push_result_to_redis(&pool, &submission_id, &resp).await;
-                            let _ = acknowledge_stream_message(
-                                &pool,
-                                &s_key,
-                                &g_name,
-                                &stream_entry_id,
-                            )
-                            .await;
-                            drop(permit);
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        let resp = ResponsePayload::compiler_error(Some(format!(
-                            "Compiler not found: {}",
-                            e
-                        )));
-                        let _ = push_result_to_redis(&pool, &submission_id, &resp).await;
-                        let _ =
-                            acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id)
-                                .await;
-                        drop(permit);
-                        return;
-                    }
-                }
-            }
-
-            info!("Compilation completed for {}", submission_id);
-
-            let (input_data, _expected_output) = testcase_parsing(payload.testcases.clone());
-            let input_file_path = root_dir_path.join("input.txt");
-            let output_file_path = root_dir_path.join("output.txt");
-            let user_output_file_path = root_dir_path.join("user_output.txt");
-            let error_file_path = root_dir_path.join("error.txt");
-
-            tokio::fs::write(&input_file_path, input_data)
-                .await
-                .unwrap();
-
-            let in_file = tokio::fs::File::open(&input_file_path)
-                .await
-                .unwrap()
-                .into_std();
-            let out_file = tokio::fs::File::create(&output_file_path)
-                .await
-                .unwrap()
-                .into_std();
-            let err_file = tokio::fs::File::create(&error_file_path)
-                .await
-                .unwrap()
-                .into_std();
-            let user_output_file = tokio::fs::File::create(&user_output_file_path)
-                .await
-                .unwrap()
-                .into_std();
-
-            let time_limit_secs = std::cmp::max(1, payload.timelimit / 1000);
-
-            let sandbox_config = SandboxConfiguration {
-                submissionid: submission_id.clone(),
-                memory_limit: payload.memorylimit,
-                time_limit: time_limit_secs,
-                root_dir: root_dir_path.clone(),
-                input_file: in_file.await,
-                output_file: out_file.await,
-                error_output: err_file.await,
-                user_output: user_output_file.await,
-                run_cmd_exe: language_config.run_cmd.0.to_string(),
-                run_cmd_args: language_config
-                    .run_cmd
-                    .1
-                    .iter()
-                    .map(|&s| s.to_string())
-                    .collect(),
-            };
-
-            let sub_id_clone = submission_id.clone();
-            let sandbox_result = tokio::task::spawn_blocking(move || {
-                info!("Starting sandbox execution for job: {}", sub_id_clone);
-                sandbox_runner(sandbox_config)
-            })
-            .await
-            .expect("Blocking task panicked");
-
-            let fd3_string = tokio::fs::read_to_string(&output_file_path)
-                .await
-                .unwrap_or_default();
-            let fd3_lines: Vec<String> = fd3_string
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|line| !line.is_empty())
-                .collect();
-
-            let user_stdout_raw = tokio::fs::read_to_string(&user_output_file_path)
-                .await
-                .unwrap_or_default();
-            let user_stdout = if user_stdout_raw.trim().is_empty() {
-                None
-            } else {
-                Some(user_stdout_raw)
-            };
-
-            let response = match sandbox_result {
-                Ok(result) => {
-                    let effective_signal = result.signal.or_else(|| {
-                        if result.exit_code > 128 {
-                            Some(result.exit_code - 128)
-                        } else {
-                            None
-                        }
-                    });
-
-                    let actual_error = tokio::fs::read_to_string(&error_file_path)
-                        .await
-                        .unwrap_or_default();
-
-                    // --- THE FIX: Cgroup Telemetry priority check ---
-                    if result.is_oom {
-                        ResponsePayload::memory_error(0, user_stdout.clone())
-                    }
-                    // ------------------------------------------------
-                    else if let Some(signal) = effective_signal {
-                        let error_msg = match signal {
-                            11 => "Runtime Error: Segmentation Fault (SIGSEGV)".to_string(),
-                            24 => "Time Limit Exceeded (CPU Time)".to_string(),
-                            9 => {
-                                if result.wall_time_ms >= payload.timelimit as u128 {
-                                    "Time Limit Exceeded (Wall Time)".to_string()
-                                } else {
-                                    // Fallback if cgroup telemetry failed for some reason
-                                    "Memory Limit Exceeded / Killed".to_string()
-                                }
-                            }
-                            8 => "Runtime Error: Floating Point Exception".to_string(),
-                            6 => "Runtime Error: Aborted (SIGABRT)".to_string(),
-                            31 => "Security Violation: Unauthorized System Call Blocked (SIGSYS)"
-                                .to_string(),
-                            _ => format!("Runtime Error: Killed by signal {}", signal),
-                        };
-
-                        match signal {
-                            24 => ResponsePayload::time_error(0, user_stdout.clone()),
-                            9 => {
-                                if result.wall_time_ms >= payload.timelimit as u128 {
-                                    ResponsePayload::time_error(0, user_stdout.clone())
-                                } else {
-                                    ResponsePayload::memory_error(0, user_stdout.clone())
-                                }
-                            }
-                            _ => {
-                                let full_err_msg = if actual_error.is_empty() {
-                                    error_msg
-                                } else {
-                                    format!("{}\n{}", error_msg, actual_error)
-                                };
-                                ResponsePayload::runtime_error(
-                                    Some(full_err_msg),
-                                    0,
-                                    user_stdout.clone(),
-                                    None,
-                                )
-                            }
-                        }
-                    } else if result.exit_code != 0 {
-                        let error_msg = format!("Runtime Error (Exit Code: {})", result.exit_code);
-                        let full_err_msg = if actual_error.is_empty() {
-                            error_msg
-                        } else {
-                            format!("{}\n{}", error_msg, actual_error)
-                        };
-
-                        ResponsePayload::runtime_error(
-                            Some(full_err_msg),
-                            0,
-                            user_stdout.clone(),
-                            None,
-                        )
-                    } else {
-                        validate_test_cases(
-                            fd3_lines,
-                            &payload.testcases,
-                            &payload.tasktype,
-                            user_stdout.clone(),
-                        )
-                    }
-                }
-                Err(e) => {
-                    error!("Sandbox engine failed for {}: {:?}", submission_id, e);
-                    ResponsePayload::error()
-                }
-            };
-
+            // 2. Publish results and cleanup, regardless of success or internal failure
             if let Err(e) = push_result_to_redis(&pool, &submission_id, &response).await {
-                error!(
-                    "Failed to push result to Redis for {}: {}",
-                    submission_id, e
-                );
+                error!("Failed to push result to Redis for {}: {}", submission_id, e);
             }
 
-            if let Err(e) =
-                acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await
-            {
-                error!(
-                    "Failed to XACK stream message {} for {}: {}",
-                    stream_entry_id, submission_id, e
-                );
+            if let Err(e) = acknowledge_stream_message(&pool, &s_key, &g_name, &stream_entry_id).await {
+                error!("Failed to XACK stream message {} for {}: {}", stream_entry_id, submission_id, e);
             }
 
             info!(
                 "Job {} completed with status: {:?}, message: {:?}",
                 submission_id, response.status, response.message
             );
+            
             drop(permit);
         });
     }
@@ -734,7 +662,7 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     );
     cmd.env("HOME", "/tmp");
     cmd.env("TMPDIR", "/tmp");
-
+    cmd.env("UV_USE_IO_URING", "0"); // Forces Node/Bun to use epoll
     cmd.stdin(Stdio::from(in_file));
     cmd.stdout(Stdio::from(user_out_file));
     cmd.stderr(Stdio::from(err_file));
@@ -994,24 +922,48 @@ pub fn sandbox_runner(sandbox_config: SandboxConfiguration) -> Result<SandboxRes
     }
     // ------------------------------------------------------------------------
 
-    let cgroup_procs_file = format!("{}/cgroup.procs", cgroup_path);
-    loop {
-        let procs = fs::read_to_string(&cgroup_procs_file).unwrap_or_default();
-        let pids: Vec<i32> = procs
-            .lines()
-            .filter_map(|line| line.trim().parse::<i32>().ok())
-            .collect();
-        if pids.is_empty() {
-            break;
-        }
-        for pid in pids {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    // let cgroup_procs_file = format!("{}/cgroup.procs", cgroup_path);
+    // loop {
+    //     let procs = fs::read_to_string(&cgroup_procs_file).unwrap_or_default();
+    //     let pids: Vec<i32> = procs
+    //         .lines()
+    //         .filter_map(|line| line.trim().parse::<i32>().ok())
+    //         .collect();
+    //     if pids.is_empty() {
+    //         break;
+    //     }
+    //     for pid in pids {
+    //         unsafe {
+    //             libc::kill(pid, libc::SIGKILL);
+    //         }
+    //     }
+    //     std::thread::sleep(std::time::Duration::from_millis(10));
+    // }
+    let cgroup_kill_file = format!("{}/cgroup.kill", cgroup_path);
 
+    // Try the atomic v2 kill first
+    if fs::write(&cgroup_kill_file, "1").is_err() {
+        // Fallback for older kernels without cgroup.kill
+        let cgroup_procs_file = format!("{}/cgroup.procs", cgroup_path);
+        loop {
+            let procs = fs::read_to_string(&cgroup_procs_file).unwrap_or_default();
+            let pids: Vec<i32> = procs
+                .lines()
+                .filter_map(|line| line.trim().parse::<i32>().ok())
+                .collect();
+
+            if pids.is_empty() {
+                break;
+            }
+
+            for pid in pids {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     if let Err(e) = fs::remove_dir(&cgroup_path) {
         error!("warning failed to remove cgroups {} : {}", cgroup_path, e);
     };
