@@ -609,7 +609,7 @@ pub async fn sandbox_runner(
     fs::create_dir_all(sandbox_config.root_dir.join("tmp")).expect("failed to create tmp dir");
     fs::create_dir_all(sandbox_config.root_dir.join("dev/shm"))
         .expect("failed to create dev/shm dir");
-
+let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join("dev/fd"));
     let init_cgroup = "/sys/fs/cgroup/init";
     fs::create_dir_all(init_cgroup).unwrap_or_default();
 
