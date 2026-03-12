@@ -5,22 +5,24 @@ RUN cargo build --release -p x_ironjudge
 
 FROM debian:bookworm-slim AS sandbox-rootfs
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 default-jre libstdc++6 libc6 && \
+    python3 default-jre-headless libstdc++6 libc6 && \
     rm -rf /var/lib/apt/lists/*
 RUN apt-get update && apt-get install -y curl unzip && \
     curl -fsSL https://bun.sh/install | bash && \
     mv ~/.bun/bin/bun /usr/local/bin/bun && \
-    apt-get purge -y curl unzip && apt-get autoremove -y
-
+    apt-get purge -y curl unzip && apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 FROM debian:bookworm-slim AS runner
 WORKDIR /app
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip default-jdk g++ rustc python3 && \
+    ca-certificates curl unzip default-jdk-headless g++ rustc python3 && \
     rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://bun.sh/install | bash
+RUN curl -fsSL https://bun.sh/install | bash && \
+    apt-get purge -y curl unzip && apt-get autoremove -y && \
+    rm -rf /root/.bun/install
 
 RUN mkdir -p /app/sandbox_bin && \
     ln -s /usr/bin/java /app/sandbox_bin/java && \
@@ -28,15 +30,19 @@ RUN mkdir -p /app/sandbox_bin && \
     ln -s /usr/bin/rustc /app/sandbox_bin/rustc && \
     ln -s /usr/bin/g++ /app/sandbox_bin/g++ && \
     ln -s /root/.bun/bin/bun /app/sandbox_bin/bun
-    
+
 RUN echo '#include <bits/stdc++.h>\n#include <unistd.h>\n#include <fcntl.h>' > /usr/include/competition.h
 RUN g++ -O2 -x c++-header /usr/include/competition.h -o /usr/include/competition.h.gch
 
 RUN mkdir -p /opt/sandbox_rootfs
-COPY --from=sandbox-rootfs / /tmp/sandbox-temp/
-RUN mkdir -p /opt/sandbox_rootfs && \
-    cp -a /tmp/sandbox-temp/bin /tmp/sandbox-temp/lib /tmp/sandbox-temp/lib64 /tmp/sandbox-temp/usr /tmp/sandbox-temp/etc /opt/sandbox_rootfs/ && \
-    rm -rf /tmp/sandbox-temp
+COPY --from=sandbox-rootfs /usr /opt/sandbox_rootfs/usr
+COPY --from=sandbox-rootfs /etc /opt/sandbox_rootfs/etc
+
+RUN cd /opt/sandbox_rootfs && \
+    ln -s usr/bin bin && \
+    ln -s usr/sbin sbin && \
+    ln -s usr/lib lib && \
+    ln -s usr/lib64 lib64
 
 ENV PATH="/app/sandbox_bin:${PATH}"
 
