@@ -33,11 +33,10 @@ RUN echo '#include <bits/stdc++.h>\n#include <unistd.h>\n#include <fcntl.h>' > /
 RUN g++ -O2 -x c++-header /usr/include/competition.h -o /usr/include/competition.h.gch
 
 RUN mkdir -p /opt/sandbox_rootfs
-COPY --from=sandbox-rootfs /bin /opt/sandbox_rootfs/bin
-COPY --from=sandbox-rootfs /lib /opt/sandbox_rootfs/lib
-COPY --from=sandbox-rootfs /lib64 /opt/sandbox_rootfs/lib64
-COPY --from=sandbox-rootfs /usr /opt/sandbox_rootfs/usr
-COPY --from=sandbox-rootfs /etc /opt/sandbox_rootfs/etc
+COPY --from=sandbox-rootfs / /tmp/sandbox-temp/
+RUN mkdir -p /opt/sandbox_rootfs && \
+    cp -a /tmp/sandbox-temp/bin /tmp/sandbox-temp/lib /tmp/sandbox-temp/lib64 /tmp/sandbox-temp/usr /tmp/sandbox-temp/etc /opt/sandbox_rootfs/ && \
+    rm -rf /tmp/sandbox-temp
 
 ENV PATH="/app/sandbox_bin:${PATH}"
 

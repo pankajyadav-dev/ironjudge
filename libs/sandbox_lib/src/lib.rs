@@ -506,17 +506,17 @@ pub fn initialize_global_cgroups_once() {
 
         // --- NEW: Bypass OverlayFS EPERM by moving rootfs entirely to RAM ---
         info!("[init] Copying isolated rootfs to RAM (/dev/shm/rootfs) for user-namespace compatibility...");
-        let status = std::process::Command::new("cp")
-            .args(["-a", "/opt/sandbox_rootfs", "/dev/shm/rootfs"])
-            .status()
-            .expect("Failed to execute cp command");
+        // let status = std::process::Command::new("cp")
+        //     .args(["-a", "/opt/sandbox_rootfs", "/dev/shm/rootfs"])
+        //     .status()
+        //     .expect("Failed to execute cp command");
 
-        if !status.success() {
-            error!("[init] CRITICAL: Failed to copy rootfs to /dev/shm/rootfs. Sandboxes will fail with 107.");
-        } else {
-            info!("[init] RAM rootfs setup successful.");
-        }
-        // ---------------------------------------------------------------------
+        // if !status.success() {
+        //     error!("[init] CRITICAL: Failed to copy rootfs to /dev/shm/rootfs. Sandboxes will fail with 107.");
+        // } else {
+        //     info!("[init] RAM rootfs setup successful.");
+        // }
+        // // ---------------------------------------------------------------------
 
         unsafe {
             let cgroup_fs_name = std::ffi::CString::new("cgroup2").unwrap();
@@ -654,13 +654,12 @@ let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join
     let _child_controllers = fs::read_to_string(format!("{}/cgroup.controllers", cgroup_path))
         .unwrap_or_else(|e| format!("read_error: {}", e));
 
-    // --- NEW: Source all bind mounts directly from the RAM disk ---
     let readonly_dirs = ["/bin", "/lib", "/lib64", "/usr", "/etc"];
     let mut ro_mounts_c: Vec<(CString, CString)> = Vec::new();
 
     for dir in &readonly_dirs {
         // Pointing to the tmpfs layer we created during initialization
-        let host_path_str = format!("/dev/shm/rootfs{}", dir);
+        let host_path_str = format!("/opt/sandbox_rootfs{}", dir);
         let host_path = std::path::Path::new(&host_path_str);
 
         if host_path.exists() {
@@ -673,7 +672,7 @@ let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join
             ));
         } else {
             error!(
-                "Critical: Missing expected RAM rootfs path: {}",
+                "Critical: Missing expected ssd rootfs path: {}",
                 host_path_str
             );
         }
