@@ -26,7 +26,11 @@ use types_lib::{
 
 pub fn get_heavy_tasks_threads() -> usize {
     let total_cores = available_parallelism().map(|n| n.get()).unwrap_or(4);
-    if total_cores <= 2 { 1 } else { total_cores - 2 }
+    match total_cores {
+            1..=2 => 1,
+            3..=4 => total_cores - 1,   
+            _ => total_cores - 2,       
+        }
 }
 
 pub async fn create_temp_file(directory: &str) -> Result<TempDir, Error> {
