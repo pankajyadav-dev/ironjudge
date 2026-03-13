@@ -7,7 +7,7 @@ local expire_time = tonumber(ARGV[3])
 local current_count = tonumber(redis.call('GET', current_key) or "0")
 local previous_count = tonumber(redis.call('GET', previous_key) or "0")
 
-local estimated_rate = (previous_count * previous_weight) + current_count
+local estimated_rate = math.ceil(previous_count * previous_weight) + current_count
 
 if estimated_rate >= limit then
     return 0
