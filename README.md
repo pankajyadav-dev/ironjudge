@@ -89,7 +89,7 @@
 ### Prerequisites
 
 - **Rust** ≥ 1.85 (stable)
-- **Redis** ≥ 7.0 with Streams support
+- **Redis** ≥ 7.0 with Stream support
 - **Linux** (sandbox requires kernel namespaces & cgroups v2)
 - **Docker** (optional, for containerized deployment)
 - Language toolchains for the languages you want to execute (g++, rustc, javac, python3, bun)
