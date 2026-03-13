@@ -3,11 +3,13 @@ use axum::{
     Router,
     extract::DefaultBodyLimit,
     http::StatusCode,
+    middleware,
+    Extension,
     routing::{get, post},
 };
 use dotenvy::dotenv;
-use http_lib::*;
-use redis_lib::{AppState, ping_redis, redis_connection_pooler};
+use http_lib::{middleware::RateLimitConfig, middleware::rate_limit_middleware, *};
+use redis_lib::{AppState, Script, ping_redis, redis_connection_pooler};
 use std::{env, sync::Arc, time::Duration};
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -33,16 +35,41 @@ async fn main() -> Result<()> {
 
     let redis_pool = redis_connection_pooler(&redisurl, pool_size)
         .context("Failed to create Redis connection pool")?;
+    let ratelimit_redis_pool = redis_connection_pooler(&redisurl, pool_size)
+        .context("Failed to create Redis connection pool")?;
 
     ping_redis(&redis_pool)
         .await
         .map_err(|e| anyhow::anyhow!("Redis health-check failed at startup: {e}"))?;
-    info!("Redis connection pool ready");
+    ping_redis(&ratelimit_redis_pool)
+        .await
+        .map_err(|e| anyhow::anyhow!("Redis health-check failed at startup: {e}"))?;
+    info!("Redis connection pool ready for both http and ratelimiter");
 
+    let lua_script: Script = Script::new(include_str!("sliding_window.lua"));
     let state = Arc::new(AppState {
         redis_pool,
+        ratelimit_redis_pool,
         stream_name,
+        lua_script,
     });
+
+    let rate_limit_config = RateLimitConfig {
+        get_limit: 5,
+        post_limit: 1,
+        get_window_seconds: 10,
+        post_window_seconds: 10,
+    };
+
+    let protected_routes = Router::new()
+        .route("/run", post(run_post))
+        .route("/test", post(test_post))
+        .route("/status/{id}",get(status_get))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit_middleware,
+        ))
+        .layer(Extension(rate_limit_config));
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -51,9 +78,7 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/", get(health))
-        .route("/run", post(run_post))
-        .route("/test", post(test_post))
-        .route("/status/{id}", get(status_get))
+        .merge(protected_routes)
         .with_state(state)
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
