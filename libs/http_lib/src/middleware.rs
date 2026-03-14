@@ -1,12 +1,16 @@
 use axum::{
+    Json,
     extract::{Extension, Request, State},
     http::{Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+
 use redis_lib::{AppState, check_sliding_window_rate_limit};
-use std::sync::Arc;
-use tracing::info;
+use std::{sync::Arc, time::Duration};
+use tracing::{error, info};
+use types_lib::ResponsePayload;
+const POOL_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 pub struct RateLimitConfig {
@@ -42,13 +46,13 @@ pub async fn rate_limit_middleware(
 
     let identity = format!("{}:{}", method_str, user_id);
 
-    let mut redis_connection = match state.ratelimit_redis_pool.get().await {
-        Ok(c) => c,
+    let mut redis_connection = match get_ratelimit_conn_with_timeout(&state).await {
+        Ok(conn) => conn,
         Err(_) => {
-            info!("Failed to pool connction form rate limiting redis pool");
+            info!("Request failed. Redis connection error");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to get redis connection",
+                Json(ResponsePayload::error()),
             )
                 .into_response();
         }
@@ -68,10 +72,31 @@ pub async fn rate_limit_middleware(
         info!("Request failed. Rate limit exceeded");
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            "Rate limit exceeded. Please try again",
+            Json(ResponsePayload::error()),
         )
             .into_response();
     }
 
     next.run(request).await
+}
+
+async fn get_ratelimit_conn_with_timeout(
+    state: &Arc<AppState>,
+) -> Result<deadpool_redis::Connection, (StatusCode, String)> {
+    tokio::time::timeout(POOL_TIMEOUT, state.ratelimit_redis_pool.get())
+        .await
+        .map_err(|_| {
+            error!("Timed out waiting for Redis connection from pool");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Service temporarily unavailable".to_string(),
+            )
+        })?
+        .map_err(|e| {
+            error!(error = %e, "Failed to get Redis connection from pool");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Redis connection error".to_string(),
+            )
+        })
 }

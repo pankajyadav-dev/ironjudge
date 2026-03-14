@@ -62,7 +62,7 @@ pub async fn status_get(
         )
     })?;
 
-    let task_status: HashMap<String, String> = redis_con
+    let mut task_status: HashMap<String, String> = redis_con
         .hgetall(format!("status:{}", id))
         .await
         .map_err(|e| {
@@ -84,10 +84,10 @@ pub async fn status_get(
 
     let response = match status {
         Some("completed") => {
-            let error = task_status.get("error").cloned();
-            let stdout = task_status.get("stdout").cloned();
-            let failed_case = task_status.get("failedcase").cloned();
-            let results = task_status.get("results").cloned();
+            let error = task_status.remove("error");
+            let stdout = task_status.remove("stdout");
+            let failed_case = task_status.remove("failedcase");
+            let results = task_status.remove("results");
 
             let lifecycle = match task_status.get("message").map(|s| s.as_str()) {
                 Some("success") => MessageType::Success,
@@ -154,6 +154,7 @@ async fn get_conn_with_timeout(
             )
         })
 }
+
 
 async fn enqueue_task(
     state: &Arc<AppState>,
