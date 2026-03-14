@@ -1,3 +1,6 @@
+---@diagnostic disable: undefined-global
+
+
 local current_key = KEYS[1]
 local previous_key = KEYS[2]
 local limit = tonumber(ARGV[1])

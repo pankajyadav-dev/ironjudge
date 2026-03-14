@@ -77,8 +77,8 @@ async fn main() -> Result<()> {
         let mut redis_conn = match shared_redis_pool.get().await {
             Ok(conn) => conn,
             Err(e) => {
-                error!("Redis connection failed: {}. Retrying in 2s...", e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                error!("Redis connection failed: {}. Retrying in 1sec", e);
+                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 continue;
             }
         };
@@ -94,7 +94,7 @@ async fn main() -> Result<()> {
         match stream_result {
             Ok(entries) => {
                 if entries.keys.is_empty() {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                     continue;
                 }
                 let stream_payload = process_redis_stream(entries);

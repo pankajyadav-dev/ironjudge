@@ -27,10 +27,10 @@ use types_lib::{
 pub fn get_heavy_tasks_threads() -> usize {
     let total_cores = available_parallelism().map(|n| n.get()).unwrap_or(4);
     match total_cores {
-            1..=2 => 1,
-            3..=4 => total_cores - 1,   
-            _ => total_cores - 2,       
-        }
+        1..=2 => 1,
+        3..=4 => total_cores - 1,
+        _ => total_cores - 2,
+    }
 }
 
 pub async fn create_temp_file(directory: &str) -> Result<TempDir, Error> {
@@ -601,37 +601,55 @@ pub async fn sandbox_runner(
     let user_out_file = sandbox_config.user_output;
     let out_fd = out_file.as_raw_fd();
 
-    let mut perms = fs::metadata(&sandbox_config.root_dir)
+    let mut perms = tokio::fs::metadata(&sandbox_config.root_dir)
+        .await
         .unwrap()
         .permissions();
     perms.set_mode(0o777);
-    let _ = fs::set_permissions(&sandbox_config.root_dir, perms);
+    let _ = tokio::fs::set_permissions(&sandbox_config.root_dir, perms).await;
 
     let old_root = sandbox_config.root_dir.join("oldroot");
-    fs::create_dir_all(&old_root).expect("failed to create oldroot dir");
-    fs::create_dir_all(sandbox_config.root_dir.join("proc")).expect("failed to create proc dir");
-    fs::create_dir_all(sandbox_config.root_dir.join("tmp")).expect("failed to create tmp dir");
-    fs::create_dir_all(sandbox_config.root_dir.join("dev/shm"))
+
+    tokio::fs::create_dir_all(&old_root)
+        .await
+        .expect("failed to create oldroot dir");
+    tokio::fs::create_dir_all(sandbox_config.root_dir.join("proc"))
+        .await
+        .expect("failed to create proc dir");
+    tokio::fs::create_dir_all(sandbox_config.root_dir.join("tmp"))
+        .await
+        .expect("failed to create tmp dir");
+    tokio::fs::create_dir_all(sandbox_config.root_dir.join("dev/shm"))
+        .await
         .expect("failed to create dev/shm dir");
-let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join("dev/fd"));
+
+    let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join("dev/fd"));
     let init_cgroup = "/sys/fs/cgroup/init";
-    fs::create_dir_all(init_cgroup).unwrap_or_default();
+
+    tokio::fs::create_dir_all(init_cgroup)
+        .await
+        .unwrap_or_default();
 
     let my_pid = std::process::id();
-    if let Err(e) = fs::write(format!("{}/cgroup.procs", init_cgroup), my_pid.to_string()) {
+    if let Err(e) =
+        tokio::fs::write(format!("{}/cgroup.procs", init_cgroup), my_pid.to_string()).await
+    {
         error!(
             "[cgroup] warning: failed to move executor to init cgroup: {}",
             e
         );
     }
 
-    let _ = fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
+    let _ = tokio::fs::read_to_string("/sys/fs/cgroup/cgroup.subtree_control")
+        .await
         .unwrap_or_else(|e| format!("read_error: {}", e));
 
-    match fs::write(
+    match tokio::fs::write(
         "/sys/fs/cgroup/cgroup.subtree_control",
         "+memory +cpu +pids",
-    ) {
+    )
+    .await
+    {
         Ok(_) => info!("[cgroup] subtree_control delegation: ok"),
         Err(e) => error!(
             "[cgroup] subtree_control delegation failed: {} (limits may not work!)",
@@ -640,23 +658,35 @@ let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join
     }
 
     let cgroup_path = format!("/sys/fs/cgroup/dsa_{}", sandbox_config.submissionid);
-    fs::create_dir_all(&cgroup_path).map_err(|e| format!("cgroup error: {}", e))?;
+
+    tokio::fs::create_dir_all(&cgroup_path)
+        .await
+        .map_err(|e| format!("cgroup error: {}", e))?;
 
     let _cgroup_guard = CgroupGuard {
         path: cgroup_path.clone(),
     };
 
     let mem_bytes = sandbox_config.memory_limit as u64 * 1024 * 1024;
-    fs::write(format!("{}/memory.max", cgroup_path), mem_bytes.to_string()).unwrap();
-    let _ = fs::write(format!("{}/memory.swap.max", cgroup_path), "0");
-    fs::write(format!("{}/cpu.max", cgroup_path), "100000 100000").unwrap();
-    fs::write(format!("{}/pids.max", cgroup_path), "64").unwrap();
+    tokio::fs::write(format!("{}/memory.max", cgroup_path), mem_bytes.to_string())
+        .await
+        .unwrap();
+    let _ = tokio::fs::write(format!("{}/memory.swap.max", cgroup_path), "0").await;
+    tokio::fs::write(format!("{}/cpu.max", cgroup_path), "100000 100000")
+        .await
+        .unwrap();
+    tokio::fs::write(format!("{}/pids.max", cgroup_path), "64")
+        .await
+        .unwrap();
 
-    let _ = fs::read_to_string(format!("{}/memory.max", cgroup_path))
+    let _ = tokio::fs::read_to_string(format!("{}/memory.max", cgroup_path))
+        .await
         .unwrap_or_else(|e| format!("read_error: {}", e));
 
-    let _child_controllers = fs::read_to_string(format!("{}/cgroup.controllers", cgroup_path))
-        .unwrap_or_else(|e| format!("read_error: {}", e));
+    let _child_controllers =
+        tokio::fs::read_to_string(format!("{}/cgroup.controllers", cgroup_path))
+            .await
+            .unwrap_or_else(|e| format!("read_error: {}", e));
 
     let readonly_dirs = ["/bin", "/lib", "/lib64", "/usr", "/etc"];
     let mut ro_mounts_c: Vec<(CString, CString)> = Vec::new();
@@ -668,7 +698,9 @@ let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join
 
         if host_path.exists() {
             let target_path = sandbox_config.root_dir.join(dir.trim_start_matches('/'));
-            fs::create_dir_all(&target_path).unwrap_or_default();
+            tokio::fs::create_dir_all(&target_path)
+                .await
+                .unwrap_or_default();
 
             ro_mounts_c.push((
                 CString::new(host_path_str).unwrap(),
@@ -681,7 +713,6 @@ let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join
             );
         }
     }
-    // --------------------------------------------------------------
 
     let device_files = ["/dev/null", "/dev/urandom", "/dev/zero"];
     let mut dev_mounts_c: Vec<(CString, CString)> = Vec::new();
@@ -689,8 +720,12 @@ let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join
         let host_path = std::path::Path::new(dev);
         if host_path.exists() {
             let target_path = sandbox_config.root_dir.join(dev.trim_start_matches('/'));
-            fs::create_dir_all(target_path.parent().unwrap()).unwrap_or_default();
-            fs::File::create(&target_path).expect("failed to create device file");
+            tokio::fs::create_dir_all(target_path.parent().unwrap())
+                .await
+                .unwrap_or_default();
+            tokio::fs::File::create(&target_path)
+                .await
+                .expect("failed to create device file");
             dev_mounts_c.push((
                 CString::new(*dev).unwrap(),
                 CString::new(target_path.to_str().unwrap()).unwrap(),
@@ -933,16 +968,6 @@ let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join
                 libc::_exit(116);
             }
 
-            // if libc::setgroups(0, std::ptr::null()) != 0 {
-            //     libc::_exit(117);
-            // }
-            // if libc::setgid(65534) != 0 {
-            //     libc::_exit(118);
-            // }
-            // if libc::setuid(65534) != 0 {
-            //     libc::_exit(119);
-            // }
-
             let cpu_rlim = libc::rlimit {
                 rlim_cur: time_limit,
                 rlim_max: time_limit + 1,
@@ -995,7 +1020,9 @@ let _ = std::os::unix::fs::symlink("/proc/self/fd", sandbox_config.root_dir.join
     };
 
     let events_path = format!("{}/memory.events", cgroup_path);
-    let events_data = fs::read_to_string(&events_path).unwrap_or_default();
+    let events_data = tokio::fs::read_to_string(&events_path)
+        .await
+        .unwrap_or_default();
 
     let mut is_oom = false;
     for line in events_data.lines() {

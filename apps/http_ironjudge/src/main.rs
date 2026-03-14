@@ -55,10 +55,10 @@ async fn main() -> Result<()> {
     });
 
     let rate_limit_config = RateLimitConfig {
-        get_limit: 5,
+        get_limit: 10,
         post_limit: 1,
         get_window_seconds: 10,
-        post_window_seconds: 10,
+        post_window_seconds: 5,
     };
 
     let protected_routes = Router::new()
