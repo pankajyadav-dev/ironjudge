@@ -74,7 +74,8 @@ pub fn validate_test_cases(
                         id: tc.id,
                         input: tc.input.trim().to_string(),
                         output: tc.output.trim().to_string(),
-                        result,
+                        result: result.clone(),
+                        success: tc.output.trim().eq(&result),
                     }
                 })
                 .collect();

@@ -80,6 +80,7 @@ pub struct TestCaseResult {
     pub input: String,
     pub output: String,
     pub result: String,
+    pub success: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

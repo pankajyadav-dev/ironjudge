@@ -25,6 +25,7 @@ Executes the code against every test case and returns the **actual output** for 
 ```
 POST /run
 Content-Type: application/json
+Headers: "x-user-id" : userid(to rate limit the submiision and polling)
 ```
 
 ### Request Body
@@ -74,7 +75,6 @@ Same payload shape, just send to `/test` instead of `/run`.
 
 ```json
 {
-    "tasktype": "test",
     "code": "import * as fs from 'fs';\nconst input = fs.readFileSync(0, 'utf-8').trim().split(/\\s+/);\nlet ptr = 0;\nconst t = parseInt(input[ptr++], 10);\nconsole.log(`Running ${t} tests`);\nfor (let i = 0; i < t; i++) {\n    const a = parseInt(input[ptr++], 10);\n    const b = parseInt(input[ptr++], 10);\n    fs.writeSync(3, (a + b) + '\\n');\n}",
     "language": "ts",
     "testcases": [
@@ -167,7 +167,7 @@ The response shape is always:
     "message": "success",
     "ttpassed": 5,
     "stdout": "Processing 5 test cases...\nDone.",
-    "results": "[{\"id\":1,\"input\":\"5 7\",\"output\":\"12\",\"result\":\"12\"},{\"id\":2,\"input\":\"10 20\",\"output\":\"30\",\"result\":\"30\"},{\"id\":3,\"input\":\"1 1\",\"output\":\"2\",\"result\":\"2\"},{\"id\":4,\"input\":\"99 1\",\"output\":\"100\",\"result\":\"100\"},{\"id\":5,\"input\":\"-5 5\",\"output\":\"0\",\"result\":\"0\"}]"
+    "results": "[{\"id\":1,\"input\":\"5 7\",\"output\":\"12\",\"result\":\"12\",\"success\":\"true\"},{\"id\":2,\"input\":\"10 20\",\"output\":\"30\",\"result\":\"30\",\"success\":\"true\"},{\"id\":3,\"input\":\"1 1\",\"output\":\"2\",\"result\":\"2\",\"success\":\"true\"},{\"id\":4,\"input\":\"99 1\",\"output\":\"100\",\"result\":\"100\",\"success\":\"true\"},{\"id\":5,\"input\":\"-5 5\",\"output\":\"0\",\"result\":\"0\",\"success\":\"true\"}]"
 }
 ```
 
@@ -290,6 +290,48 @@ The response shape is always:
 | `"ts"`   | TypeScript | `solution.ts` | `bun`              |
 
 ---
+
+## 6. Main App Database Schema
+
+The following tables should be created in the Main App's database to manage the problem payload construction and to store the final submission results from the `/test` endpoint.
+
+### Table 1: `problems`
+
+This table stores the core execution constraints and test cases for a specific problem. The Main App queries this to build the `testcases`, `timelimit`, and `memorylimit` fields for the IronJudge JSON payload.
+
+| Column Name    | Data Type | Constraints   | Description                                      |
+| -------------- | --------- | ------------- | ------------------------------------------------ |
+| `problem_id`   | UUID/Int  | Primary Key   | Unique identifier for the coding problem.        |
+| `test_cases`   | JSON      | Not Null      | Stores the array of inputs and expected outputs. |
+| `memory_limit` | Int       | Default: 256  | Maximum memory allowed in MB.                    |
+| `time_limit`   | Int       | Default: 2000 | Maximum execution time allowed in ms.            |
+
+### Table 2: `problem_languages`
+
+This table stores the 6 different language entries for a single `problem_id`. It handles the separation between what the user sees and what is actually sent to IronJudge.
+
+| Column Name   | Data Type | Constraints | Description                                                                                                                                           |
+| ------------- | --------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`          | UUID/Int  | Primary Key | Unique identifier for this specific language configuration.                                                                                           |
+| `problem_id`  | UUID/Int  | Foreign Key | References `problems.problem_id`.                                                                                                                     |
+| `language`    | String    | Enum        | One of: `cpp`, `java`, `rust`, `js`, `ts`, `py`.                                                                                                      |
+| `boilerplate` | Text      | Not Null    | The starter code shown to the user in the UI (e.g., just the function signature).                                                                     |
+| `hidden_code` | Text      | Not Null    | The full wrapper code. For example, this is where the complete Python wrapper would be stored, while the `boilerplate` only shows the inner function. |
+
+_How it works:_ When a user submits their code, the Main App fetches the `hidden_code` for that language, injects the user's submitted logic into it, and sends the combined string as the `code` field to IronJudge.
+
+### Table 3: `test_submissions`
+
+This table strictly logs the results of submissions sent to the `/test` endpoint. The `/run` endpoint is treated as a dry-run and is not recorded here.
+
+| Column Name     | Data Type | Constraints | Description                                                                         |
+| --------------- | --------- | ----------- | ----------------------------------------------------------------------------------- |
+| `submission_id` | UUID      | Primary Key | The UUID returned by IronJudge.                                                     |
+| `problem_id`    | UUID/Int  | Foreign Key | References `problems.problem_id`.                                                   |
+| `user_id`       | UUID/Int  | Foreign Key | The ID of the user who made the submission.                                         |
+| `status`        | String    | Not Null    | E.g., `pending`, `completed`, `error`. Updates via polling `/status`.               |
+| `result_msg`    | String    | Nullable    | The `message` from IronJudge (e.g., `success`, `testcasefailed`, `run_time_error`). |
+| `tests_passed`  | Int       | Default: 0  | Matches the `ttpassed` field from the IronJudge response.                           |
 
 ## Typical Flow
 
