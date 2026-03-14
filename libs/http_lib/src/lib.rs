@@ -1,8 +1,5 @@
 pub mod middleware;
 
-
-
-
 use axum::{
     Json,
     extract::{Path, State},
@@ -10,12 +7,11 @@ use axum::{
     response::IntoResponse,
 };
 use redis::AsyncCommands;
+use redis_lib::AppState;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
-use redis_lib::AppState;
 use types_lib::*;
-
+use uuid::Uuid;
 
 const POOL_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -107,7 +103,9 @@ pub async fn status_get(
 
             match lifecycle {
                 MessageType::Success => ResponsePayload::success(stdout, results, ttpassed),
-                MessageType::Testcasefailed => ResponsePayload::test_failed(ttpassed, failed_case, stdout),
+                MessageType::Testcasefailed => {
+                    ResponsePayload::test_failed(ttpassed, failed_case, stdout)
+                }
                 MessageType::CompileTimeError => ResponsePayload::compiler_error(error),
                 MessageType::RunTimeError => {
                     ResponsePayload::runtime_error(error, ttpassed, stdout, failed_case)
@@ -154,7 +152,6 @@ async fn get_conn_with_timeout(
             )
         })
 }
-
 
 async fn enqueue_task(
     state: &Arc<AppState>,

@@ -279,7 +279,10 @@ impl LanguageConfig {
             LanguageType::Java => LanguageConfig {
                 source_filename: "Main.java",
                 compile_cmd: Some(("javac", vec!["Main.java"])),
-                run_cmd: ("java", vec!["-Xmx128M", "-Xms128M", "-XX:+UseSerialGC", "Main"]),
+                run_cmd: (
+                    "java",
+                    vec!["-Xmx128M", "-Xms128M", "-XX:+UseSerialGC", "Main"],
+                ),
             },
             LanguageType::Py => LanguageConfig {
                 source_filename: "solution.py",

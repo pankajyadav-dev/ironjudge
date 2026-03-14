@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
 use axum::{
-    Router,
+    Extension, Router,
     extract::DefaultBodyLimit,
     http::StatusCode,
     middleware,
-    Extension,
     routing::{get, post},
 };
 use dotenvy::dotenv;
@@ -64,7 +63,7 @@ async fn main() -> Result<()> {
     let protected_routes = Router::new()
         .route("/run", post(run_post))
         .route("/test", post(test_post))
-        .route("/status/{id}",get(status_get))
+        .route("/status/{id}", get(status_get))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,
