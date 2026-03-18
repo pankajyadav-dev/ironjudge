@@ -968,9 +968,7 @@ pub async fn sandbox_runner(
             if libc::umount2(b"/oldroot\0".as_ptr() as *const i8, libc::MNT_DETACH) != 0 {
                 libc::_exit(116);
             }
-            if libc::rmdir(b"/oldroot\0".as_ptr() as *const i8) != 0 {
-                libc::_exit(117);
-            }
+            libc::rmdir(b"/oldroot\0".as_ptr() as *const i8);
             let cpu_rlim = libc::rlimit {
                 rlim_cur: time_limit,
                 rlim_max: time_limit + 1,
