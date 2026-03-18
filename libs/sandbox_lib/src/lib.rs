@@ -1022,7 +1022,7 @@ pub async fn sandbox_runner(
                 tracing::error!("failed to write cgroup.kill: {}", e);
             };
             let _ = child.kill().await;
-
+            let _ = child.wait().await;
             std::os::unix::process::ExitStatusExt::from_raw(9)
         }
     };
