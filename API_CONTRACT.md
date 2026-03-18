@@ -110,7 +110,8 @@ GET /status/{submissionid}
 The response shape is always:
 
 ```json
-{
+{ 
+    "submissionid":"{submisionid}",
     "status": "<status>",
     "message": "<message>",
     "ttpassed": 0,
@@ -132,8 +133,6 @@ The response shape is always:
 
 | `status`       | `message`              | Meaning                               |
 | -------------- | ---------------------- | ------------------------------------- |
-| `"pending"`    | `"processing"`         | Task is queued, not yet picked up     |
-| `"processing"` | `"processing"`         | Worker is currently executing         |
 | `"completed"`  | `"success"`            | All test cases passed / executed      |
 | `"completed"`  | `"testcasefailed"`     | A test case failed (Test mode only)   |
 | `"completed"`  | `"compile_time_error"` | Code failed to compile                |
@@ -146,15 +145,7 @@ The response shape is always:
 
 ### Response Examples
 
-#### Still processing
 
-```json
-{
-    "status": "processing",
-    "message": "processing",
-    "ttpassed": 0
-}
-```
 
 #### Success — Run mode
 
@@ -162,7 +153,8 @@ The response shape is always:
 `stdout` contains the user's console output (regular `console.log` / `print` / `cout`).
 
 ```json
-{
+{ 
+    "submissionid":"{submisionid}",
     "status": "completed",
     "message": "success",
     "ttpassed": 5,
@@ -179,11 +171,13 @@ The response shape is always:
 | `input`  | `string` | stdin input (trimmed)     |
 | `output` | `string` | Expected output (trimmed) |
 | `result` | `string` | Actual output from fd3    |
+| 'success' | 'bool'  | is test match the actual output |
 
 #### Success — Test mode
 
 ```json
-{
+{ 
+    "submissionid":"{submisionid}",
     "status": "completed",
     "message": "success",
     "ttpassed": 3,
@@ -200,6 +194,7 @@ The response shape is always:
 
 ```json
 {
+    "submissionid":"{submisionid}",
     "status": "completed",
     "message": "testcasefailed",
     "ttpassed": 1,
@@ -221,6 +216,7 @@ The response shape is always:
 
 ```json
 {
+    "submissionid":"{submisionid}",
     "status": "completed",
     "message": "compile_time_error",
     "ttpassed": 0,
@@ -232,6 +228,7 @@ The response shape is always:
 
 ```json
 {
+    "submissionid":"{submisionid}",
     "status": "completed",
     "message": "run_time_error",
     "ttpassed": 0,
@@ -243,7 +240,8 @@ The response shape is always:
 #### Time limit exceeded
 
 ```json
-{
+{ 
+    "submissionid":"{submisionid}",
     "status": "completed",
     "message": "time_limit_error",
     "ttpassed": 0,
@@ -255,7 +253,8 @@ The response shape is always:
 #### Memory limit exceeded
 
 ```json
-{
+{ 
+    "submissionid":"{submisionid}",
     "status": "completed",
     "message": "memory_limit_error",
     "ttpassed": 0,
