@@ -1013,14 +1013,12 @@ pub async fn sandbox_runner(
         Ok(Err(e)) => return Err(format!("Wait error: {}", e).into()),
         Err(_) => {
             let kill_file = format!("{}/cgroup.kill", cgroup_path);
-            let _ = tokio::fs::write(&kill_file, "1").await;
+            if let Err(e) = tokio::fs::write(&kill_file, "1").await {
+                tracing::error!("failed to write cgroup.kill: {}", e);
+            };
             let _ = child.kill().await;
 
             std::os::unix::process::ExitStatusExt::from_raw(9)
-            // child
-            //     .wait()
-            //     .await
-            //     .unwrap_or_else(|_| std::os::unix::process::ExitStatusExt::from_raw(9))
         }
     };
 
