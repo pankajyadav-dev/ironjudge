@@ -845,9 +845,9 @@ pub async fn sandbox_runner(
             if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
                 libc::_exit(130);
             }
-            if libc::getppid() == 0 || libc::getppid() == 1 {
-                libc::_exit(131);
-            }
+            // if libc::getppid() == 0 || libc::getppid() == 1 {
+            //     libc::_exit(131);
+            // }
             libc::mount(
                 b"/\0".as_ptr() as *const i8,
                 b"/\0".as_ptr() as *const i8,
