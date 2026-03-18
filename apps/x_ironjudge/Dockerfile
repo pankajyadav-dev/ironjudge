@@ -17,7 +17,7 @@ WORKDIR /app
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip default-jdk-headless g++ rustc python3 && \
+    ca-certificates curl unzip default-jdk-headless g++ rustc python3 tini&& \
     rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://bun.sh/install | bash && \
@@ -58,4 +58,5 @@ ENV REDISURL=$REDISURL \
     REDISPAYLOADLEN=$REDISPAYLOADLEN
 
 COPY --from=builder /app/target/release/x_ironjudge /app/x_ironjudge
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["./x_ironjudge"]
