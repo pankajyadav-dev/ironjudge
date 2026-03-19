@@ -1029,6 +1029,8 @@ pub async fn sandbox_runner(
                 }
             }
             let expected_ms = sandbox_config.time_limit as u128 * 1000;
+            info!("expected time to compelte program {}",expected_ms);
+            info!("cpu usage time time to compelte program {}",cpu_usage_ms);
             if cpu_usage_ms < expected_ms {
                 warn!(
                     "Sleeping process detected: cpu_usage_ms={} expected_ms={}",
