@@ -331,12 +331,12 @@ async fn process_single_submission(
         .await?
         .into_std();
 
-    let time_limit_secs = std::cmp::max(1, payload.timelimit / 1000);
+    let time_limit_millisec = std::cmp::max(1000, payload.timelimit);
 
     let sandbox_config = SandboxConfiguration {
         submissionid: submission_id.to_string(),
         memory_limit: payload.memorylimit,
-        time_limit: time_limit_secs,
+        time_limit: time_limit_millisec,
         root_dir: root_dir_path.clone(),
         input_file: in_file.await,
         output_file: out_file.await,
@@ -769,7 +769,7 @@ pub async fn sandbox_runner(
     cmd.stdout(Stdio::from(user_out_file));
     cmd.stderr(Stdio::from(err_file));
 
-    let time_limit = sandbox_config.time_limit as u64;
+    let time_limit = sandbox_config.time_limit as u64 / 1000;
     let bpf_instructions = build_strict_seccomp_profile();
 
     unsafe {
@@ -831,6 +831,10 @@ pub async fn sandbox_runner(
                 libc::_exit(103);
             }
             if child_pid > 0 {
+                for fd in 3..1024 {
+                    libc::close(fd);
+                }
+
                 let mut status = 0;
                 if libc::waitpid(child_pid, &mut status, 0) < 0 {
                     libc::_exit(104);
@@ -1011,8 +1015,12 @@ pub async fn sandbox_runner(
 
     let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {}", e))?;
 
-    let timeout_duration = std::time::Duration::from_secs(sandbox_config.time_limit as u64 + 1);
-    info!("{} the sandbox config time limit", sandbox_config.time_limit);
+    let timeout_duration =
+        std::time::Duration::from_millis(sandbox_config.time_limit as u64 + 1000);
+    info!(
+        "{} the sandbox config time limit",
+        sandbox_config.time_limit
+    );
     let status = match timeout(timeout_duration, child.wait()).await {
         Ok(Ok(status)) => status,
         Ok(Err(e)) => return Err(format!("Wait error: {}", e).into()),
@@ -1028,9 +1036,9 @@ pub async fn sandbox_runner(
                     }
                 }
             }
-            let expected_ms = sandbox_config.time_limit as u128 * 1000;
-            info!("expected time to compelte program {}",expected_ms);
-            info!("cpu usage time time to compelte program {}",cpu_usage_ms);
+            let expected_ms = sandbox_config.time_limit as u128 / 2;
+            info!("expected time to compelte program {}", expected_ms);
+            info!("cpu usage time time to compelte program {}", cpu_usage_ms);
             if cpu_usage_ms < expected_ms {
                 warn!(
                     "Sleeping process detected: cpu_usage_ms={} expected_ms={}",
@@ -1046,7 +1054,7 @@ pub async fn sandbox_runner(
             std::os::unix::process::ExitStatusExt::from_raw(9)
         }
     };
-
+    info!("status of the time bound process {}", status);
     let events_path = format!("{}/memory.events", cgroup_path);
     let events_data = tokio::fs::read_to_string(&events_path)
         .await
