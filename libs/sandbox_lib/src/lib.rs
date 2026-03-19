@@ -1012,7 +1012,7 @@ pub async fn sandbox_runner(
     let mut child = cmd.spawn().map_err(|e| format!("spawn failed: {}", e))?;
 
     let timeout_duration = std::time::Duration::from_secs(sandbox_config.time_limit as u64 + 1);
-
+    info!("{} the sandbox config time limit", sandbox_config.time_limit);
     let status = match timeout(timeout_duration, child.wait()).await {
         Ok(Ok(status)) => status,
         Ok(Err(e)) => return Err(format!("Wait error: {}", e).into()),
