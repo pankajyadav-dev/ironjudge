@@ -18,7 +18,7 @@ use tempfile::{Builder, TempDir};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use types_lib::{
     FailedTestDetail, LanguageConfig, ResponsePayload, SandboxConfiguration, SandboxError,
     SandboxResult, TaskPayload, TaskType, TestCaseResult, TestCaseType,
@@ -314,7 +314,6 @@ async fn process_single_submission(
         }
     }
 
-    info!("compilation completed for {}", submission_id);
 
     let (input_data, _expected_output) = testcase_parsing(payload.testcases.clone());
     let input_file_path = root_dir_path.join("input.txt");
@@ -351,8 +350,6 @@ async fn process_single_submission(
             .collect(),
     };
 
-    let sub_id_clone = submission_id.to_string();
-    info!("starting sandbox execution for job: {}", sub_id_clone);
     let sandbox_result = sandbox_runner(sandbox_config)
         .await
         .map_err(|e| anyhow::anyhow!("{:?}", e))?;
@@ -507,21 +504,8 @@ static CGROUP_INIT: Once = Once::new();
 
 pub fn initialize_global_cgroups_once() {
     CGROUP_INIT.call_once(|| {
-        info!("[init] performing one-time global cgroup and rootfs initialization...");
-
-        // --- NEW: Bypass OverlayFS EPERM by moving rootfs entirely to RAM ---
-        info!("[init] Copying isolated rootfs to RAM (/dev/shm/rootfs) for user-namespace compatibility...");
-        // let status = std::process::Command::new("cp")
-        //     .args(["-a", "/opt/sandbox_rootfs", "/dev/shm/rootfs"])
-        //     .status()
-        //     .expect("Failed to execute cp command");
-
-        // if !status.success() {
-        //     error!("[init] CRITICAL: Failed to copy rootfs to /dev/shm/rootfs. Sandboxes will fail with 107.");
-        // } else {
-        //     info!("[init] RAM rootfs setup successful.");
-        // }
-        // // ---------------------------------------------------------------------
+        // info!("[init] performing one-time global cgroup and rootfs initialization...");
+        // info!("[init] Copying isolated rootfs to RAM (/dev/shm/rootfs) for user-namespace compatibility...");
 
         unsafe {
             let cgroup_fs_name = std::ffi::CString::new("cgroup2").unwrap();
@@ -1017,34 +1001,29 @@ pub async fn sandbox_runner(
 
     let timeout_duration =
         std::time::Duration::from_millis(sandbox_config.time_limit as u64 + 1000);
-    info!(
-        "{} the sandbox config time limit",
-        sandbox_config.time_limit
-    );
+   
     let status = match timeout(timeout_duration, child.wait()).await {
         Ok(Ok(status)) => status,
         Ok(Err(e)) => return Err(format!("Wait error: {}", e).into()),
         Err(_) => {
-            let cpu_stat_path = format!("{}/cpu.stat", cgroup_path);
-            let mut cpu_usage_ms: u128 = 0;
-            if let Ok(stat_data) = tokio::fs::read_to_string(&cpu_stat_path).await {
-                for line in stat_data.lines() {
-                    if let Some(value) = line.strip_prefix("usage_usec ") {
-                        if let Ok(usage) = value.parse::<u128>() {
-                            cpu_usage_ms = usage / 1000;
-                        }
-                    }
-                }
-            }
-            let expected_ms = sandbox_config.time_limit as u128 / 2;
-            info!("expected time to compelte program {}", expected_ms);
-            info!("cpu usage time time to compelte program {}", cpu_usage_ms);
-            if cpu_usage_ms < expected_ms {
-                warn!(
-                    "Sleeping process detected: cpu_usage_ms={} expected_ms={}",
-                    cpu_usage_ms, expected_ms
-                );
-            }
+            // let cpu_stat_path = format!("{}/cpu.stat", cgroup_path);
+            // let mut cpu_usage_ms: u128 = 0;
+            // if let Ok(stat_data) = tokio::fs::read_to_string(&cpu_stat_path).await {
+            //     for line in stat_data.lines() {
+            //         if let Some(value) = line.strip_prefix("usage_usec ") {
+            //             if let Ok(usage) = value.parse::<u128>() {
+            //                 cpu_usage_ms = usage / 1000;
+            //             }
+            //         }
+            //     }
+            // }
+            // let expected_ms = sandbox_config.time_limit as u128 / 2;
+            // if cpu_usage_ms < expected_ms {
+                // warn!(
+                    // "Sleeping process detected: cpu_usage_ms={} expected_ms={}",
+                    // cpu_usage_ms, expected_ms
+                // );
+            // }
             let kill_file = format!("{}/cgroup.kill", cgroup_path);
             if let Err(e) = tokio::fs::write(&kill_file, "1").await {
                 tracing::error!("failed to write cgroup.kill: {}", e);
@@ -1054,7 +1033,6 @@ pub async fn sandbox_runner(
             std::os::unix::process::ExitStatusExt::from_raw(9)
         }
     };
-    info!("status of the time bound process {}", status);
     let events_path = format!("{}/memory.events", cgroup_path);
     let events_data = tokio::fs::read_to_string(&events_path)
         .await
