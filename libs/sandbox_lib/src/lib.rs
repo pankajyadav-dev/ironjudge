@@ -18,7 +18,7 @@ use tempfile::{Builder, TempDir};
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use types_lib::{
     FailedTestDetail, LanguageConfig, ResponsePayload, SandboxConfiguration, SandboxError,
     SandboxResult, TaskPayload, TaskType, TestCaseResult, TestCaseType,
@@ -1017,12 +1017,30 @@ pub async fn sandbox_runner(
         Ok(Ok(status)) => status,
         Ok(Err(e)) => return Err(format!("Wait error: {}", e).into()),
         Err(_) => {
+            let cpu_stat_path = format!("{}/cpu.stat", cgroup_path);
+            let mut cpu_usage_ms: u128 = 0;
+            if let Ok(stat_data) = tokio::fs::read_to_string(&cpu_stat_path).await {
+                for line in stat_data.lines() {
+                    if let Some(value) = line.strip_prefix("usage_usec ") {
+                        if let Ok(usage) = value.parse::<u128>() {
+                            cpu_usage_ms = usage / 1000;
+                        }
+                    }
+                }
+            }
+            let expected_ms = sandbox_config.time_limit as u128;
+            if cpu_usage_ms < expected_ms {
+                warn!(
+                    "Sleeping process detected: cpu_usage_ms={} expected_ms={}",
+                    cpu_usage_ms, expected_ms
+                );
+            }
             let kill_file = format!("{}/cgroup.kill", cgroup_path);
             if let Err(e) = tokio::fs::write(&kill_file, "1").await {
                 tracing::error!("failed to write cgroup.kill: {}", e);
             };
             let _ = child.kill().await;
-            // let _ = child.wait().await;
+            // // let _ = child.wait().await;
             std::os::unix::process::ExitStatusExt::from_raw(9)
         }
     };
