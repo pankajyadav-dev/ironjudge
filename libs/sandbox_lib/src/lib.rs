@@ -314,7 +314,6 @@ async fn process_single_submission(
         }
     }
 
-
     let (input_data, _expected_output) = testcase_parsing(payload.testcases.clone());
     let input_file_path = root_dir_path.join("input.txt");
     let output_file_path = root_dir_path.join("output.txt");
@@ -528,7 +527,10 @@ pub fn initialize_global_cgroups_once() {
 
         let my_pid = std::process::id();
         if let Err(e) = fs::write(format!("{}/cgroup.procs", init_cgroup), my_pid.to_string()) {
-            error!("[cgroup] warning: failed to move executor to init cgroup: {}", e);
+            error!(
+                "[cgroup] warning: failed to move executor to init cgroup: {}",
+                e
+            );
         }
 
         match fs::write(
@@ -1001,7 +1003,7 @@ pub async fn sandbox_runner(
 
     let timeout_duration =
         std::time::Duration::from_millis(sandbox_config.time_limit as u64 + 1000);
-   
+
     let status = match timeout(timeout_duration, child.wait()).await {
         Ok(Ok(status)) => status,
         Ok(Err(e)) => return Err(format!("Wait error: {}", e).into()),
@@ -1019,10 +1021,10 @@ pub async fn sandbox_runner(
             // }
             // let expected_ms = sandbox_config.time_limit as u128 / 2;
             // if cpu_usage_ms < expected_ms {
-                // warn!(
-                    // "Sleeping process detected: cpu_usage_ms={} expected_ms={}",
-                    // cpu_usage_ms, expected_ms
-                // );
+            // warn!(
+            // "Sleeping process detected: cpu_usage_ms={} expected_ms={}",
+            // cpu_usage_ms, expected_ms
+            // );
             // }
             let kill_file = format!("{}/cgroup.kill", cgroup_path);
             if let Err(e) = tokio::fs::write(&kill_file, "1").await {
