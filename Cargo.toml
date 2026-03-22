@@ -3,6 +3,11 @@ resolver = "3"
 members = ["apps/http_ironjudge", "apps/x_ironjudge", "libs/http_lib", "libs/redis_lib", "libs/sandbox_lib", "libs/types_lib"]
 
 
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
 [workspace.dependencies]
 axum = "0.8.8"
 redis = { version = "1.0.4", features = ["tokio-comp", "connection-manager"] }
