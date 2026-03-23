@@ -13,9 +13,7 @@ pub fn is_valid_uuid_v7(input: &str) -> bool {
             // info!("Parsed UUID VERSION: {}", parsed_uuid.get_version_num());
             parsed_uuid.get_version_num() == 7
         }
-        Err(_) => {
-            false 
-        }
+        Err(_) => false,
     }
 }
 

@@ -1,9 +1,9 @@
 pub mod action;
 pub mod cgroups;
+pub mod compilesandbox;
 pub mod processor;
 pub mod sandbox;
 pub mod seccomp;
-pub mod compilesandbox;
 
 pub use action::get_heavy_tasks_threads;
 use processor::process_single_submission;

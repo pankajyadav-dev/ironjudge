@@ -1,6 +1,8 @@
-use crate::action::{create_temp_file, is_valid_uuid_v7, read_bounded_string, testcase_parsing, validate_test_cases};
-use crate::sandbox::sandbox_runner;
+use crate::action::{
+    create_temp_file, is_valid_uuid_v7, read_bounded_string, testcase_parsing, validate_test_cases,
+};
 use crate::compilesandbox::compile_sandbox_runner;
+use crate::sandbox::sandbox_runner;
 // use tracing::info;
 
 use types_lib::{CompileSandboxConfig, SandboxConfiguration};
@@ -17,10 +19,12 @@ pub async fn process_single_submission(
     let source_path = root_dir_path.join(language_config.source_filename);
     tokio::fs::write(&source_path, &payload.code).await?;
 
-    if !is_valid_uuid_v7(submission_id){
-        return Ok(ResponsePayload::error(Some(format!("Invalid submission id").to_string())));
+    if !is_valid_uuid_v7(submission_id) {
+        return Ok(ResponsePayload::error(Some(
+            format!("Invalid submission id").to_string(),
+        )));
     }
-    
+
     if let Some((compiler, args)) = &language_config.compile_cmd {
         let compiler_config = CompileSandboxConfig {
             submissionid: submission_id.to_string(),
@@ -28,28 +32,30 @@ pub async fn process_single_submission(
             root_dir: root_dir_path.clone(),
             run_cmd_exe: compiler,
             memory_limit: 1024,
-            time_limit: 5000
+            time_limit: 5000,
         };
         let compilation_result = compile_sandbox_runner(compiler_config).await;
         match compilation_result {
             Ok(result) => {
-                if !result.success{
+                if !result.success {
                     return Ok(ResponsePayload::compiler_error(Some(result.error)));
                 }
-            },
+            }
             Err(e) => {
-                return Ok(ResponsePayload::compiler_error(Some(format!("Sandbox error: {}",e).to_string())));
-            },
+                return Ok(ResponsePayload::compiler_error(Some(
+                    format!("Sandbox error: {}", e).to_string(),
+                )));
+            }
         }
-        
+
         // if let Some((status, error)) = compilation_result {
-            // if !status.success() {
-                // return Ok(ResponsePayload::compiler_error(Some(error)));
-            // }
+        // if !status.success() {
+        // return Ok(ResponsePayload::compiler_error(Some(error)));
+        // }
         // }
         // compiler: compiler.to_string(),
-            // args: args.clone(),
-            // current_dir: root_dir_path,
+        // args: args.clone(),
+        // current_dir: root_dir_path,
         // let compile_result = tokio::process::Command::new(compiler)
         //     .args(args)
         //     .current_dir(&root_dir_path)

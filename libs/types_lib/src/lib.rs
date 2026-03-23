@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf};
+use std::path::PathBuf;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct TaskPayload {
@@ -24,7 +24,7 @@ pub struct SandboxResult {
 #[derive(Debug)]
 pub struct CompileResult {
     pub success: bool,
-    pub error: String
+    pub error: String,
 }
 
 pub type SandboxError = String;

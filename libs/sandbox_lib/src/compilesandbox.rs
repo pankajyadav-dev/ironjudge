@@ -5,14 +5,12 @@ use crate::cgroups::{CgroupGuard, initialize_global_cgroups_once};
 // use std::os::fd::AsRawFd;
 // use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
-use std::process::{Stdio};
+use std::process::Stdio;
 // use std::time::Instant;
 use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{error, info};
 use types_lib::{CompileResult, CompileSandboxConfig, SandboxError};
-
-
 
 pub async fn compile_sandbox_runner(
     sandbox_config: CompileSandboxConfig,
@@ -121,7 +119,10 @@ pub async fn compile_sandbox_runner(
             // Handle by the tokio run time  drop the child process when timeout function completely
             // let _ = child.wait().await;
 
-            (ExitStatusExt::from_raw(9), "Compile Timeout Error".to_string())
+            (
+                ExitStatusExt::from_raw(9),
+                "Compile Timeout Error".to_string(),
+            )
         }
     };
 
