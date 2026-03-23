@@ -52,7 +52,7 @@ pub async fn rate_limit_middleware(
             info!("Request failed. Redis connection error");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ResponsePayload::error()),
+                Json(ResponsePayload::error(Some("Internal server Error: R".to_string()))),
             )
                 .into_response();
         }
@@ -72,7 +72,7 @@ pub async fn rate_limit_middleware(
         info!("Request failed. Rate limit exceeded");
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(ResponsePayload::error()),
+            Json(ResponsePayload::error(Some("Rate limit exceeded. Please try again after some time".to_string()))),
         )
             .into_response();
     }

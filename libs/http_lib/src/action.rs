@@ -35,7 +35,7 @@ pub async fn enqueue_task(
     payload: &TaskPayload,
     task_type: &str,
 ) -> Result<String, (StatusCode, String)> {
-    let random_id = Uuid::new_v4().to_string();
+    let random_id = Uuid::now_v7().to_string();
 
     let json_payload = serde_json::to_string(payload).map_err(|e| {
         error!(error = %e, task_type, "Failed to serialize TaskPayload");

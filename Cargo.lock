@@ -860,6 +860,7 @@ dependencies = [
  "tokio",
  "tracing",
  "types_lib",
+ "uuid",
 ]
 
 [[package]]

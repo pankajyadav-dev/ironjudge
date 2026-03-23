@@ -1,7 +1,9 @@
-use crate::action::{create_temp_file, read_bounded_string, testcase_parsing, validate_test_cases};
+use crate::action::{create_temp_file, is_valid_uuid_v7, read_bounded_string, testcase_parsing, validate_test_cases};
 use crate::sandbox::sandbox_runner;
-use tracing::info;
-use types_lib::SandboxConfiguration;
+use crate::compilesandbox::compile_sandbox_runner;
+// use tracing::info;
+
+use types_lib::{CompileSandboxConfig, SandboxConfiguration};
 use types_lib::{LanguageConfig, ResponsePayload, TaskPayload};
 
 pub async fn process_single_submission(
@@ -15,20 +17,50 @@ pub async fn process_single_submission(
     let source_path = root_dir_path.join(language_config.source_filename);
     tokio::fs::write(&source_path, &payload.code).await?;
 
+    if !is_valid_uuid_v7(submission_id){
+        return Ok(ResponsePayload::error(Some(format!("Invalid submission id").to_string())));
+    }
+    
     if let Some((compiler, args)) = &language_config.compile_cmd {
-        let compile_result = tokio::process::Command::new(compiler)
-            .args(args)
-            .current_dir(&root_dir_path)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await?;
-
-        if !compile_result.status.success() {
-            let stderr = String::from_utf8_lossy(&compile_result.stderr).to_string();
-            info!("compilation failed for {}: {}", submission_id, stderr);
-            return Ok(ResponsePayload::compiler_error(Some(stderr)));
+        let compiler_config = CompileSandboxConfig {
+            submissionid: submission_id.to_string(),
+            run_cmd_args: args.clone(),
+            root_dir: root_dir_path.clone(),
+            run_cmd_exe: compiler,
+            memory_limit: 1024,
+            time_limit: 5000
+        };
+        let compilation_result = compile_sandbox_runner(compiler_config).await;
+        match compilation_result {
+            Ok(result) => {
+                if !result.success{
+                    return Ok(ResponsePayload::compiler_error(Some(result.error)));
+                }
+            },
+            Err(e) => {
+                return Ok(ResponsePayload::compiler_error(Some(format!("Sandbox error: {}",e).to_string())));
+            },
         }
+        
+        // if let Some((status, error)) = compilation_result {
+            // if !status.success() {
+                // return Ok(ResponsePayload::compiler_error(Some(error)));
+            // }
+        // }
+        // compiler: compiler.to_string(),
+            // args: args.clone(),
+            // current_dir: root_dir_path,
+        // let compile_result = tokio::process::Command::new(compiler)
+        //     .args(args)
+        //     .current_dir(&root_dir_path)
+        //     .stderr(std::process::Stdio::piped())
+        //     .output()
+        //     .await?;
+
+        // if !compile_result.status.success() {
+        //     let stderr = String::from_utf8_lossy(&compile_result.stderr).to_string();
+        //     info!("compilation failed for {}: {}", submission_id, stderr);
+        // }
     }
 
     let (input_data, _expected_output) = testcase_parsing(payload.testcases.clone());

@@ -3,6 +3,21 @@ use std::thread::available_parallelism;
 use tempfile::{Builder, TempDir};
 use tokio::io::AsyncReadExt;
 use types_lib::{FailedTestDetail, ResponsePayload, TaskType, TestCaseResult, TestCaseType};
+use uuid::Uuid;
+// use tracing::info;
+
+pub fn is_valid_uuid_v7(input: &str) -> bool {
+    match Uuid::parse_str(input) {
+        Ok(parsed_uuid) => {
+            // info!("Parsed UUID: {}", parsed_uuid);
+            // info!("Parsed UUID VERSION: {}", parsed_uuid.get_version_num());
+            parsed_uuid.get_version_num() == 7
+        }
+        Err(_) => {
+            false 
+        }
+    }
+}
 
 pub async fn read_bounded_string(
     path: &std::path::Path,
@@ -24,6 +39,7 @@ pub async fn read_bounded_string(
 
     Ok(buffer)
 }
+
 pub fn get_heavy_tasks_threads() -> usize {
     let total_cores = available_parallelism().map(|n| n.get()).unwrap_or(4);
     match total_cores {

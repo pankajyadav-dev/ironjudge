@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{path::PathBuf};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct TaskPayload {
@@ -20,6 +20,11 @@ pub struct SandboxResult {
     pub signal: Option<i32>,
     pub wall_time_ms: u128,
     pub is_oom: bool,
+}
+#[derive(Debug)]
+pub struct CompileResult {
+    pub success: bool,
+    pub error: String
 }
 
 pub type SandboxError = String;
@@ -58,6 +63,40 @@ impl SandboxConfiguration {
             output_file,
             user_output,
             error_output,
+            time_limit,
+            memory_limit,
+            run_cmd_exe,
+            run_cmd_args,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CompileSandboxConfig {
+    pub submissionid: String,
+    pub root_dir: PathBuf,
+    pub time_limit: usize,
+    pub memory_limit: usize,
+    pub run_cmd_exe: &'static str,
+    pub run_cmd_args: Vec<&'static str>,
+}
+
+impl CompileSandboxConfig {
+    pub fn process(
+        submissionid: String,
+        root_dir: PathBuf,
+        // output_file: std::fs::File,
+        // error_output: std::fs::File,
+        time_limit: usize,
+        memory_limit: usize,
+        run_cmd_exe: &'static str,
+        run_cmd_args: Vec<&'static str>,
+    ) -> Self {
+        Self {
+            submissionid,
+            root_dir,
+            // output_file,
+            // error_output,
             time_limit,
             memory_limit,
             run_cmd_exe,
@@ -140,11 +179,11 @@ impl ResponsePayload {
             failedcase,
         }
     }
-    pub fn error() -> Self {
+    pub fn error(err: Option<String>) -> Self {
         Self {
             status: StatusType::Error,
             message: MessageType::Error,
-            error: None,
+            error: err,
             ttpassed: 0,
             stdout: None,
             results: None,

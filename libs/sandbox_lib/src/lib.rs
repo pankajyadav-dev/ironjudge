@@ -3,6 +3,7 @@ pub mod cgroups;
 pub mod processor;
 pub mod sandbox;
 pub mod seccomp;
+pub mod compilesandbox;
 
 pub use action::get_heavy_tasks_threads;
 use processor::process_single_submission;
@@ -43,7 +44,7 @@ pub async fn execute_submissions_detached(
                 Ok(resp) => resp,
                 Err(e) => {
                     error!("internal sandbox error for {}: {}", submission_id, e);
-                    ResponsePayload::error()
+                    ResponsePayload::error(None)
                 }
             };
 

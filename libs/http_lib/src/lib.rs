@@ -46,13 +46,13 @@ pub async fn status_get(
     // --- Input validation: reject anything that isn't a valid UUID ---
     if Uuid::parse_str(&id).is_err() {
         warn!(submission_id = %id, "Received invalid UUID in status request");
-        return Err((StatusCode::BAD_REQUEST, Json(ResponsePayload::error())));
+        return Err((StatusCode::BAD_REQUEST, Json(ResponsePayload::error(Some("Invalid submission id".to_string())))));
     }
 
     let mut redis_con = get_conn_with_timeout(&state).await.map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ResponsePayload::error()),
+            Json(ResponsePayload::error(Some("Internal Server Error with conection: R".to_string()))),
         )
     })?;
 
@@ -63,13 +63,13 @@ pub async fn status_get(
             error!(error = %e, submission_id = %id, "Redis HGETALL failed during status check");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ResponsePayload::error()),
+                Json(ResponsePayload::error(Some("Internal Server Error with conection: r".to_string()))),
             )
         })?;
 
     if task_status.is_empty() {
         warn!(submission_id = %id, "Status requested but task was not found in Redis");
-        return Err((StatusCode::NOT_FOUND, Json(ResponsePayload::error())));
+        return Err((StatusCode::NOT_FOUND, Json(ResponsePayload::error(Some("Session Expired".to_string())))));
     }
 
     let status = task_status.get("status").map(|s| s.as_str());
@@ -112,18 +112,18 @@ pub async fn status_get(
                 MessageType::MemoryLimitError => ResponsePayload::memory_error(ttpassed, stdout),
                 _ => {
                     error!(submission_id = %id, "Task completed but encountered an unknown lifecycle message");
-                    ResponsePayload::error()
+                    ResponsePayload::error(Some("Invalid status".to_string()))
                 }
             }
         }
         Some("pending") | Some("processing") => ResponsePayload::processing(),
         None => {
             error!(submission_id = %id, "Task exists but 'status' key is missing in the Hash");
-            return Err((StatusCode::NOT_FOUND, Json(ResponsePayload::error())));
+            return Err((StatusCode::NOT_FOUND, Json(ResponsePayload::error(Some("Session Expired".to_string())))));
         }
         Some(unknown_status) => {
             error!(submission_id = %id, status = unknown_status, "Unknown status string encountered");
-            ResponsePayload::error()
+            ResponsePayload::error(Some("Invalid status".to_string()))
         }
     };
 
