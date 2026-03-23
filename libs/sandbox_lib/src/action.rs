@@ -1,8 +1,29 @@
 use anyhow::Error;
 use std::thread::available_parallelism;
 use tempfile::{Builder, TempDir};
+use tokio::io::AsyncReadExt;
 use types_lib::{FailedTestDetail, ResponsePayload, TaskType, TestCaseResult, TestCaseType};
 
+pub async fn read_bounded_string(
+    path: &std::path::Path,
+    max_bytes: u64,
+) -> std::io::Result<String> {
+    let file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
+        Err(_) => return Ok(String::new()),
+    };
+
+    let mut buffer = String::new();
+    file.take(max_bytes).read_to_string(&mut buffer).await?;
+
+    if let Ok(metadata) = tokio::fs::metadata(path).await {
+        if metadata.len() > max_bytes {
+            buffer.push_str("\n... [Output Truncated: Exceeded 1MB limit]");
+        }
+    }
+
+    Ok(buffer)
+}
 pub fn get_heavy_tasks_threads() -> usize {
     let total_cores = available_parallelism().map(|n| n.get()).unwrap_or(4);
     match total_cores {

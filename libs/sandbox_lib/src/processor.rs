@@ -1,4 +1,4 @@
-use crate::action::{create_temp_file, testcase_parsing, validate_test_cases};
+use crate::action::{create_temp_file, read_bounded_string, testcase_parsing, validate_test_cases};
 use crate::sandbox::sandbox_runner;
 use tracing::info;
 use types_lib::SandboxConfiguration;
@@ -70,6 +70,13 @@ pub async fn process_single_submission(
         .await
         .map_err(|e| anyhow::anyhow!("{:?}", e))?;
 
+    let output_limit = 1024 * 512; // .5 MB
+
+    // let fd3_string = read_bounded_string(&output_file_path, output_limit).await.unwrap_or_default();
+    let user_stdout_raw = read_bounded_string(&user_output_file_path, output_limit)
+        .await
+        .unwrap_or_default();
+
     let fd3_string = tokio::fs::read_to_string(&output_file_path)
         .await
         .unwrap_or_default();
@@ -79,9 +86,9 @@ pub async fn process_single_submission(
         .filter(|line| !line.is_empty())
         .collect();
 
-    let user_stdout_raw = tokio::fs::read_to_string(&user_output_file_path)
-        .await
-        .unwrap_or_default();
+    // let user_stdout_raw = tokio::fs::read_to_string(&user_output_file_path)
+    // .await
+    // .unwrap_or_default();
     let user_stdout = if user_stdout_raw.trim().is_empty() {
         None
     } else {
@@ -96,9 +103,12 @@ pub async fn process_single_submission(
         }
     });
 
-    let actual_error = tokio::fs::read_to_string(&error_file_path)
+    let actual_error = read_bounded_string(&error_file_path, output_limit)
         .await
         .unwrap_or_default();
+    // let actual_error = tokio::fs::read_to_string(&error_file_path)
+    // .await
+    // .unwrap_or_default();
 
     let response = if sandbox_result.is_oom {
         ResponsePayload::memory_error(0, user_stdout.clone())

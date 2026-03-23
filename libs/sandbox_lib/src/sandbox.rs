@@ -106,10 +106,10 @@ pub async fn sandbox_runner(
         .await
         .unwrap_or_else(|e| format!("read_error: {}", e));
 
-    let _child_controllers =
-        tokio::fs::read_to_string(format!("{}/cgroup.controllers", cgroup_path))
-            .await
-            .unwrap_or_else(|e| format!("read_error: {}", e));
+    // let _child_controllers =
+    //     tokio::fs::read_to_string(format!("{}/cgroup.controllers", cgroup_path))
+    //         .await
+    //         .unwrap_or_else(|e| format!("read_error: {}", e));
 
     let readonly_dirs = ["/bin", "/lib", "/lib64", "/usr", "/etc"];
     let mut ro_mounts_c: Vec<(CString, CString)> = Vec::new();
