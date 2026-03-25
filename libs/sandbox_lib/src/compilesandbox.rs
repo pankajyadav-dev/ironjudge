@@ -1,51 +1,15 @@
 use crate::cgroups::{CgroupGuard, initialize_global_cgroups_once};
-// use crate::seccomp::build_strict_seccomp_profile;
-// use nix::sched::{CloneFlags, unshare};
-// use std::ffi::CString;
-// use std::os::fd::AsRawFd;
-// use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::process::Stdio;
-// use std::time::Instant;
 use tokio::process::Command;
 use tokio::time::timeout;
-use tracing::{error, info};
+use tracing::error;
 use types_lib::{CompileResult, CompileSandboxConfig, SandboxError};
 
 pub async fn compile_sandbox_runner(
     sandbox_config: CompileSandboxConfig,
 ) -> Result<CompileResult, SandboxError> {
-    // let start_time = Instant::now();
     initialize_global_cgroups_once();
-
-    // 1. Setup Parent Cgroup
-    let init_cgroup = "/sys/fs/cgroup/init";
-    tokio::fs::create_dir_all(init_cgroup)
-        .await
-        .unwrap_or_default();
-
-    let my_pid = std::process::id();
-    if let Err(e) =
-        tokio::fs::write(format!("{}/cgroup.procs", init_cgroup), my_pid.to_string()).await
-    {
-        error!(
-            "[cgroup] warning: failed to move executor to init cgroup: {}",
-            e
-        );
-    }
-
-    match tokio::fs::write(
-        "/sys/fs/cgroup/cgroup.subtree_control",
-        "+memory +cpu +pids",
-    )
-    .await
-    {
-        Ok(_) => info!("[cgroup] subtree_control delegation: ok"),
-        Err(e) => error!(
-            "[cgroup] subtree_control delegation failed: {} (limits may not work!)",
-            e
-        ),
-    }
 
     // 2. Setup Sandbox Cgroup for Compilation
     let cgroup_path = format!("/sys/fs/cgroup/compile_{}", sandbox_config.submissionid);

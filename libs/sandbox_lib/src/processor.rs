@@ -47,26 +47,6 @@ pub async fn process_single_submission(
                 )));
             }
         }
-
-        // if let Some((status, error)) = compilation_result {
-        // if !status.success() {
-        // return Ok(ResponsePayload::compiler_error(Some(error)));
-        // }
-        // }
-        // compiler: compiler.to_string(),
-        // args: args.clone(),
-        // current_dir: root_dir_path,
-        // let compile_result = tokio::process::Command::new(compiler)
-        //     .args(args)
-        //     .current_dir(&root_dir_path)
-        //     .stderr(std::process::Stdio::piped())
-        //     .output()
-        //     .await?;
-
-        // if !compile_result.status.success() {
-        //     let stderr = String::from_utf8_lossy(&compile_result.stderr).to_string();
-        //     info!("compilation failed for {}: {}", submission_id, stderr);
-        // }
     }
 
     let (input_data, _expected_output) = testcase_parsing(payload.testcases.clone());

@@ -81,7 +81,7 @@ impl Drop for CgroupGuard {
         }
 
         if retries == 0 {
-            tracing::warn!("cgroup {} was still populated after 500ms wait", self.path);
+            tracing::warn!("cgroup {} was still populated after 100ms wait", self.path);
         }
         if let Err(e) = std::fs::remove_dir(&self.path) {
             error!("warning failed to remove cgroups {} : {}", self.path, e);
