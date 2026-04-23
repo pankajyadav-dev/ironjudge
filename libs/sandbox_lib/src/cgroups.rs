@@ -1,6 +1,6 @@
 use std::fs::{self};
 use std::sync::Once;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 static CGROUP_INIT: Once = Once::new();
 
@@ -53,38 +53,28 @@ pub struct CgroupGuard {
 impl Drop for CgroupGuard {
     fn drop(&mut self) {
         let kill_file = format!("{}/cgroup.kill", self.path);
-        let procs_file = format!("{}/cgroup.procs", self.path);
+        let procs_file = format!("{}/cgroup.events", self.path);
         let _ = std::fs::write(&kill_file, "1");
 
-        let mut retries = 10;
+        let mut retries = 200;
 
         while retries > 0 {
-            let procs = std::fs::read_to_string(&procs_file).unwrap_or_default();
-
-            if procs.trim().is_empty() {
-                break;
-            }
-
-            let pids: Vec<i32> = procs
-                .lines()
-                .filter_map(|line| line.trim().parse::<i32>().ok())
-                .collect();
-
-            for pid in pids {
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
+            if let Ok(events) = std::fs::read_to_string(&procs_file) {
+                if events.contains("populated 0") {
+                    break;
                 }
             }
 
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(20));
             retries -= 1;
         }
-
         if retries == 0 {
-            tracing::warn!("cgroup {} was still populated after 100ms wait", self.path);
+            tracing::warn!("cgroups {} was still populated after 100ms wait", self.path);
         }
         if let Err(e) = std::fs::remove_dir(&self.path) {
             error!("warning failed to remove cgroups {} : {}", self.path, e);
+        } else {
+            debug!("Succesfully cleaned up cgroups file {}", self.path);
         }
     }
 }
