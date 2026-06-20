@@ -7,11 +7,11 @@ edition = "2024"
 anyhow.workspace = true
 libc.workspace = true
 nix.workspace = true
-redis_lib = { version = "0.1.0", path = "../redis_lib" }
+redis_lib.workspace = true
 seccompiler.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-types_lib = { version = "0.1.0", path = "../types_lib" }
+types_lib.workspace = true
 uuid.workspace = true

@@ -18,7 +18,7 @@ use tower_http::{
 use tracing::info;
 
 const MAX_BODY_SIZE: usize = 1_048_576;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/", get(health))
+        .route("/health", get(health))
         .merge(protected_routes)
         .with_state(state)
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
         .layer(TraceLayer::new_for_http())
         .layer(cors);
 
-    info!("IronJudge HTTP server is listening on {}", addr);
+    // info!("IronJudge HTTP server is listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
